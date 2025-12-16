@@ -1,18 +1,19 @@
 #!/bin/bash
-MYSQL_BACKUP_DIR=/opt/mysql-backups
-MYSQL_DATA_HOST=/opt/mysql/mysql_data
-MYSQL_USER=bkpuser
-MYSQL_PASSWORD=jRhBEXFo2waHL23PlocT9szn3ZuN
+MYSQL_BACKUP_DIR=/database/inc-backup
+MYSQL_DATA_HOST=/db-data
+MYSQL_USER=inc_backuper
+MYSQL_PASSWORD=pass
 MYSQL_PORT=3306
-MYSQL_HOST=mysql
-MYSQL_DOCKER_NETWORK="mysql"
-CONTAINER_IMAGE=percona/percona-xtrabackup:8.0
+MYSQL_HOST=127.0.0.1
+MYSQL_DOCKER_NETWORK="host"
+CONTAINER_IMAGE=percona/percona-xtrabackup:8.0.35
+PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 
-docker_xtrabackup() {
+docker_xtrabackup_exec() {
     local extra_args=$1
-    docker run --rm -u 0 --network $MYSQL_DOCKER_NETWORK \
+    docker run -u 999 --rm --network $MYSQL_DOCKER_NETWORK \
         -v "$MYSQL_DATA_HOST":/var/lib/mysql:ro \
-        -v "$MYSQL_BACKUP_DIR":/backups \
+        -v "$MYSQL_BACKUP_DIR":/backup \
         $CONTAINER_IMAGE \
         xtrabackup --user="$MYSQL_USER" --password="$MYSQL_PASSWORD" --host="$MYSQL_HOST" --port="$MYSQL_PORT" $extra_args
 }
@@ -37,16 +38,15 @@ verify_chain() {
 
 
 apply_log () {
-    docker_xtrabackup "--prepare --target-dir=/backups/full"
+    docker_xtrabackup_exec "--prepare --target-dir=/backup/full"
 }
 
 full_backup() {
-    if [[ ! -z $MYSQL_BACKUP_DIR ]]; then
-        rm -rf "$MYSQL_BACKUP_DIR/*"
-        mkdir -p "$MYSQL_BACKUP_DIR/full"
-        docker_xtrabackup "--backup --target-dir=/backups/full"
-        apply_log
-    fi
+    [[ -d "$MYSQL_BACKUP_DIR" ]] || { echo "Dir $MYSQL_BACKUP_DIR Not Exist"; exit 1; }
+    rm -rf "$MYSQL_BACKUP_DIR"/*
+    mkdir -p "$MYSQL_BACKUP_DIR/full"
+    docker_xtrabackup_exec "--backup --target-dir=/backup/full"
+    apply_log
 }
 
 inc_backup() {
@@ -70,7 +70,7 @@ inc_backup() {
         base_bk="inc$old_inc_file"
     fi
 
-    if docker_xtrabackup "--backup --target-dir=/backups/inc$inc_file --incremental-basedir=/backups/$base_bk"; then
+    if docker_xtrabackup_exec "--backup --target-dir=/backup/inc$inc_file --incremental-basedir=/backup/$base_bk"; then
         echo "Done inc$inc_file"
     else
         echo "Incremental backup inc$inc_file failed." >&2
@@ -93,16 +93,17 @@ checks_inc_backups() {
 
 
 merge_inc_to_full() {
-    docker_xtrabackup "--prepare  --apply-log-only --target-dir=/backups/full"
+    docker_xtrabackup_exec "--prepare  --apply-log-only --target-dir=/backup/full"
     for i in {1..6}; do
         target="$MYSQL_BACKUP_DIR/inc$i"
         if [[ -d "$target" ]]; then
             echo "inc$i"
-            docker_xtrabackup "--prepare --apply-log-only --target-dir=/backups/full --incremental-dir=/backups/inc$i"
+            docker_xtrabackup_exec "--prepare --apply-log-only --target-dir=/backup/full --incremental-dir=/backup/inc$i"
         fi
     done
     apply_log
 }
+
 
 
 inc_or_full() {
@@ -120,3 +121,4 @@ inc_or_full() {
 
 inc_or_full
 #merge_inc_to_full
+

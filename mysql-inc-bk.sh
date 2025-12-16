@@ -6,11 +6,15 @@ MYSQL_PASSWORD=pass
 MYSQL_PORT=3306
 MYSQL_HOST=127.0.0.1
 MYSQL_DOCKER_NETWORK="host"
+
 CONTAINER_IMAGE=percona/percona-xtrabackup:8.0.35
+
 PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 
-
 MAX_INC_BACKUP_COUNT=3
+
+SCRIPT_NAME=$(basename "$0")
+SCRIPT_LOG_FILE="/var/log/$SCRIPT_NAME-$(date '+%Y-%m-%d_%H-%M').log"
 
 log() {
     local timestamp
@@ -19,9 +23,9 @@ log() {
     local status="$1"
     local message="$2"
 
-    if [[ ! "$status" =~ ^(ERROR|DONE|INFO)$ ]]; then
+    if [[ ! "$status" =~ ^(ERROR|DONE|INFO)$ ]]; then 
         jq -n --arg ts "$timestamp" --arg src "$source" --arg st "invalid" --arg msg "Invalid status: $status. Allowed: ERROR, DONE, INFO" \
-           '{timestamp: $ts, source: $src, status: $st, message: $msg}' >>"$SCRIPT_LOG_FILE"
+           '{timestamp: $ts, source: $src, status: $st, message: $msg}' | tee -a "$SCRIPT_LOG_FILE"
         return 1
     fi
 
@@ -29,11 +33,13 @@ log() {
     json=$(jq -n --arg ts "$timestamp" --arg src "$source" --arg st "$status" --arg msg "$message" \
          '{timestamp: $ts, source: $src, status: $st, message: $msg}')
 
-    [[ "$status" != "INFO" ]] && curl -s -X POST "https://gn.azkiloan.com/alerts" -H "Content-Type: application/json" -d "$json"
+    # Send alert for ERROR or DONE
+    if [[ "$status" == "ERROR" ]]; then
+        curl -s -X POST "https://gn.azkiloan.com/alerts-test" -H "Content-Type: application/json" -d "$json"
+    fi
 
-    log "INFO" "$json" | tee -a "$SCRIPT_LOG_FILE"
+    echo "$json" | tee -a "$SCRIPT_LOG_FILE"
 }
-
 
 
 docker_xtrabackup_exec() {
@@ -77,7 +83,7 @@ full_backup() {
 }
 
 inc_backup() {
-    for i in {1..$MAX_INC_BACKUP_COUNT}; do
+    for (( i=1; i<=MAX_INC_BACKUP_COUNT; i++ )); do
         target="$MYSQL_BACKUP_DIR/inc$i"
         if [[ ! -d "$target" ]]; then
             inc_file="$i"
@@ -98,7 +104,7 @@ inc_backup() {
     fi
 
     if docker_xtrabackup_exec "--backup --target-dir=/backup/inc$inc_file --incremental-basedir=/backup/$base_bk"; then
-        log "INFO" "Done inc$inc_file"
+        log "INFO" "Incremental backup inc$inc_file successfully"
     else
         log "ERROR" "Incremental backup inc$inc_file failed." >&2
         return 1
@@ -121,11 +127,15 @@ checks_inc_backups() {
 
 merge_inc_to_full() {
     docker_xtrabackup_exec "--prepare  --apply-log-only --target-dir=/backup/full"
-    for i in {1..$MAX_INC_BACKUP_COUNT}; do
+    for (( i=1; i<=MAX_INC_BACKUP_COUNT; i++ )); do
         target="$MYSQL_BACKUP_DIR/inc$i"
         if [[ -d "$target" ]]; then
-            log "INFO" "inc$i"
-            docker_xtrabackup_exec "--prepare --apply-log-only --target-dir=/backup/full --incremental-dir=/backup/inc$i"
+            if docker_xtrabackup_exec "--prepare --apply-log-only --target-dir=/backup/full --incremental-dir=/backup/inc$i"; then
+                log "INFO" "Incremental backup inc$i merged with full"
+            else
+                log "ERROR" "Merge with full Incremental backup inc$i failed"
+                exit 1;
+            fi
         fi
     done
     apply_log

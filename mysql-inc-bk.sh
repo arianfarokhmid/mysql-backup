@@ -9,6 +9,33 @@ MYSQL_DOCKER_NETWORK="host"
 CONTAINER_IMAGE=percona/percona-xtrabackup:8.0.35
 PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 
+
+MAX_INC_BACKUP_COUNT=3
+
+log() {
+    local timestamp
+    timestamp=$(date -u "+%Y-%m-%d %H:%M")
+    local source="${3:-$SCRIPT_NAME}"
+    local status="$1"
+    local message="$2"
+
+    if [[ ! "$status" =~ ^(ERROR|DONE|INFO)$ ]]; then
+        jq -n --arg ts "$timestamp" --arg src "$source" --arg st "invalid" --arg msg "Invalid status: $status. Allowed: ERROR, DONE, INFO" \
+           '{timestamp: $ts, source: $src, status: $st, message: $msg}' >>"$SCRIPT_LOG_FILE"
+        return 1
+    fi
+
+    local json
+    json=$(jq -n --arg ts "$timestamp" --arg src "$source" --arg st "$status" --arg msg "$message" \
+         '{timestamp: $ts, source: $src, status: $st, message: $msg}')
+
+    [[ "$status" != "INFO" ]] && curl -s -X POST "https://gn.azkiloan.com/alerts" -H "Content-Type: application/json" -d "$json"
+
+    log "INFO" "$json" | tee -a "$SCRIPT_LOG_FILE"
+}
+
+
+
 docker_xtrabackup_exec() {
     local extra_args=$1
     docker run -u 999 --rm --network $MYSQL_DOCKER_NETWORK \
@@ -27,11 +54,11 @@ verify_chain() {
     local curr_from_lsn=$(grep "from_lsn" "$curr_dir/xtrabackup_checkpoints" | awk '{print $3}')
 
     if [[ "$prev_to_lsn" == "$curr_from_lsn" ]]; then
-        echo "Chain Integrity OK: $prev_dir ($prev_to_lsn) -> $curr_dir ($curr_from_lsn)"
+        log "INFO" "Chain Integrity OK: $prev_dir ($prev_to_lsn) -> $curr_dir ($curr_from_lsn)"
         return 0
     else
-        echo "CORRUPTION DETECTED: Chain broken between $prev_dir and $curr_dir"
-        echo "Expected: $prev_to_lsn, Found: $curr_from_lsn"
+        log "ERROR" "CORRUPTION DETECTED: Chain broken between $prev_dir and $curr_dir"
+        log "ERROR" "Expected: $prev_to_lsn, Found: $curr_from_lsn"
         return 1
     fi
 }
@@ -42,7 +69,7 @@ apply_log () {
 }
 
 full_backup() {
-    [[ -d "$MYSQL_BACKUP_DIR" ]] || { echo "Dir $MYSQL_BACKUP_DIR Not Exist"; exit 1; }
+    [[ -d "$MYSQL_BACKUP_DIR" ]] || { log "ERROR" "Dir $MYSQL_BACKUP_DIR Not Exist"; exit 1; }
     rm -rf "$MYSQL_BACKUP_DIR"/*
     mkdir -p "$MYSQL_BACKUP_DIR/full"
     docker_xtrabackup_exec "--backup --target-dir=/backup/full"
@@ -50,7 +77,7 @@ full_backup() {
 }
 
 inc_backup() {
-    for i in {1..6}; do
+    for i in {1..$MAX_INC_BACKUP_COUNT}; do
         target="$MYSQL_BACKUP_DIR/inc$i"
         if [[ ! -d "$target" ]]; then
             inc_file="$i"
@@ -59,7 +86,7 @@ inc_backup() {
     done
 
     if [[ -z "$inc_file" ]]; then
-        echo "All incremental slots (1–6) are already used." >&2
+        log "ERROR" "All incremental slots (1–$MAX_INC_BACKUP_COUNT) are already used." >&2
         return 1
     fi
 
@@ -71,9 +98,9 @@ inc_backup() {
     fi
 
     if docker_xtrabackup_exec "--backup --target-dir=/backup/inc$inc_file --incremental-basedir=/backup/$base_bk"; then
-        echo "Done inc$inc_file"
+        log "INFO" "Done inc$inc_file"
     else
-        echo "Incremental backup inc$inc_file failed." >&2
+        log "ERROR" "Incremental backup inc$inc_file failed." >&2
         return 1
     fi
 }
@@ -94,10 +121,10 @@ checks_inc_backups() {
 
 merge_inc_to_full() {
     docker_xtrabackup_exec "--prepare  --apply-log-only --target-dir=/backup/full"
-    for i in {1..6}; do
+    for i in {1..$MAX_INC_BACKUP_COUNT}; do
         target="$MYSQL_BACKUP_DIR/inc$i"
         if [[ -d "$target" ]]; then
-            echo "inc$i"
+            log "INFO" "inc$i"
             docker_xtrabackup_exec "--prepare --apply-log-only --target-dir=/backup/full --incremental-dir=/backup/inc$i"
         fi
     done
@@ -119,6 +146,17 @@ inc_or_full() {
 
 }
 
-# inc_or_full
-merge_inc_to_full
 
+ACTION=$1
+
+case "$ACTION" in
+    "inc")
+        inc_or_full
+    ;;
+    "merge")
+        merge_inc_to_full
+    ;;
+    *)
+        log "ERROR" "Incorrect Input Script"
+    ;;
+esac

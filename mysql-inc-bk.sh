@@ -119,6 +119,6 @@ inc_or_full() {
 
 }
 
-inc_or_full
-#merge_inc_to_full
+# inc_or_full
+merge_inc_to_full
 

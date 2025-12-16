@@ -7,11 +7,12 @@ MYSQL_PORT=3306
 MYSQL_HOST=127.0.0.1
 MYSQL_DOCKER_NETWORK="host"
 
+
 CONTAINER_IMAGE=percona/percona-xtrabackup:8.0.35
 
 PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 
-MAX_INC_BACKUP_COUNT=3
+MAX_INC_BACKUP_COUNT=1
 
 SCRIPT_NAME=$(basename "$0")
 SCRIPT_LOG_FILE="/var/log/$SCRIPT_NAME-$(date '+%Y-%m-%d_%H-%M').log"
@@ -23,13 +24,13 @@ log() {
     local status="$1"
     local message="$2"
 
-    if [[ ! "$status" =~ ^(ERROR|DONE|INFO)$ ]]; then 
-        jq -n --arg ts "$timestamp" --arg src "$source" --arg st "invalid" --arg msg "Invalid status: $status. Allowed: ERROR, DONE, INFO" \
+    if [[ ! "$status" =~ ^(ERROR|DONE|INFO|WARN)$ ]]; then 
+        jq -n --arg ts "$timestamp" --arg src "$source" --arg st "invalid" --arg msg "Invalid status: $status. Allowed: ERROR, DONE, INFO , WARN" \
            '{timestamp: $ts, source: $src, status: $st, message: $msg}' | tee -a "$SCRIPT_LOG_FILE"
         return 1
     fi
 
-    local json
+   local json
     json=$(jq -n --arg ts "$timestamp" --arg src "$source" --arg st "$status" --arg msg "$message" \
          '{timestamp: $ts, source: $src, status: $st, message: $msg}')
 
@@ -92,8 +93,9 @@ inc_backup() {
     done
 
     if [[ -z "$inc_file" ]]; then
-        log "ERROR" "All incremental slots (1–$MAX_INC_BACKUP_COUNT) are already used." >&2
-        return 1
+        log "WARN" "All incremental slots (1–$MAX_INC_BACKUP_COUNT) are already used."  
+        merge_inc_to_full
+        return 0;
     fi
 
     if [[ "$inc_file" -eq 1 ]]; then
@@ -126,19 +128,28 @@ checks_inc_backups() {
 
 
 merge_inc_to_full() {
+    local merge_state
     docker_xtrabackup_exec "--prepare  --apply-log-only --target-dir=/backup/full"
     for (( i=1; i<=MAX_INC_BACKUP_COUNT; i++ )); do
         target="$MYSQL_BACKUP_DIR/inc$i"
         if [[ -d "$target" ]]; then
             if docker_xtrabackup_exec "--prepare --apply-log-only --target-dir=/backup/full --incremental-dir=/backup/inc$i"; then
                 log "INFO" "Incremental backup inc$i merged with full"
+                merge_state=true
             else
-                log "ERROR" "Merge with full Incremental backup inc$i failed"
-                exit 1;
+                log "WARN" "Merge with full Incremental backup inc$i failed"
+                merge_state=false
             fi
         fi
-    done
-    apply_log
+    done    
+
+    if [[ "$merge_state" == true ]]; then 
+        apply_log
+    else
+        log "ERROR" "Incremental backup Merges Failed"
+        exit 1;
+    fi
+    
 }
 
 
@@ -157,16 +168,4 @@ inc_or_full() {
 }
 
 
-ACTION=$1
-
-case "$ACTION" in
-    "inc")
-        inc_or_full
-    ;;
-    "merge")
-        merge_inc_to_full
-    ;;
-    *)
-        log "ERROR" "Incorrect Input Script"
-    ;;
-esac
+inc_or_full

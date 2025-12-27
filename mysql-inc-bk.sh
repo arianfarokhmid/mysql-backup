@@ -12,7 +12,7 @@ CONTAINER_IMAGE=percona/percona-xtrabackup:8.0.35
 
 PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 
-MAX_INC_BACKUP_COUNT=1
+MAX_INC_BACKUP_COUNT=2
 
 SCRIPT_NAME=$(basename "$0")
 SCRIPT_LOG_FILE="/var/log/$SCRIPT_NAME-$(date '+%Y-%m-%d_%H-%M').log"
@@ -117,12 +117,17 @@ inc_backup() {
 checks_inc_backups() {
     for inc_dir in $MYSQL_BACKUP_DIR/inc*
     do
-        if [[ -e $inc_dir/xtrabackup_checkpoints  ]]; then
-            if [[ -n $latest_inc_dir ]]; then
-                verify_chain $latest_inc_dir $inc_dir 
+        if [[ -d $inc_dir ]]; then 
+            if [[ -e $inc_dir/xtrabackup_checkpoints  ]]; then
+                if [[ -n $latest_inc_dir ]]; then
+                    verify_chain $latest_inc_dir $inc_dir 
+                fi
+            else
+                log "ERROR" "Dir $inc_dir Have Some Issue"
+                return 1
             fi
-        fi
-        latest_inc_dir=$inc_dir
+            latest_inc_dir=$inc_dir
+        fi 
     done
 }
 

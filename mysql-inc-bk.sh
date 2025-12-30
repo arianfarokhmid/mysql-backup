@@ -1,12 +1,14 @@
 #!/bin/bash
 MYSQL_BACKUP_DIR=/opt/mysql-inc-dev-backup/backup
 MYSQL_DATA_HOST=/opt/mysql/data2/
-MYSQL_USER=
-MYSQL_PASSWORD=
+MYSQL_USER=bkpuser
+MYSQL_PASSWORD=jRhBEXFo2waHL23PlocT9szn3ZuN
 MYSQL_PORT=3306
 MYSQL_HOST=mysql-dev
 MYSQL_DOCKER_NETWORK="mysql"
 
+MYSQL_TEST_USERNAME="data_cheker"
+MYSQL_TEST_PASSWORD="T39EEyFRCCfmeNeQNXMbXVrK"
 MYSQL_TEST_IMAGE="mysql:8.0.43"
 MYSQL_TEST_CONTAINER_NAME="mysql-test-backup"
 MYSQL_TEST_CONTAINER_UID="999"
@@ -16,12 +18,14 @@ MYSQL_TEST_HOST_PORT="3309"
 
 CONTAINER_IMAGE=percona/percona-xtrabackup:8.0.35
 
+LOG_DIR=/opt/mysql-inc-dev-backup/logs
+
 PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 
 MAX_INC_BACKUP_COUNT=3
 
 SCRIPT_NAME=$(basename "$0")
-SCRIPT_LOG_FILE="/var/log/$SCRIPT_NAME-$(date '+%Y-%m-%d_%H-%M').log"
+SCRIPT_LOG_FILE="$LOG_DIR/$SCRIPT_NAME-$(date '+%Y-%m-%d_%H-%M').log"
 
 log() {
     local timestamp
@@ -41,9 +45,9 @@ log() {
          '{timestamp: $ts, source: $src, status: $st, message: $msg}')
 
     # Send alert for ERROR or DONE
-    # if [[ "$status" == "ERROR" ]]; then
-        # curl -s -X POST "https://gn.azkiloan.com/alerts-test" -H "Content-Type: application/json" -d "$json"
-    # fi
+    if [[ "$status" == "ERROR" ]]; then
+        curl -s -X POST "https://gn.azkiloan.com/alerts-test" -H "Content-Type: application/json" -d "$json"
+    fi
 
     echo "$json" | tee -a "$SCRIPT_LOG_FILE"
 }
@@ -165,17 +169,60 @@ merge_inc_to_full() {
     
 }
 
+check_mysql_state() {
+    local retries=240
+    for i in $(seq 1 "$retries"); do
+        if docker exec -it $MYSQL_TEST_CONTAINER_NAME mysql -u $MYSQL_TEST_USERNAME -p"$MYSQL_TEST_PASSWORD" -D azki_loan -e "select * from ticket order by id desc LIMIT 10;"; then
+            return 0
+        fi
+        sleep 1
+    done
+    return 1 
+}
+
+
+clean_temp_mysql() {
+    if docker rm -f "${MYSQL_TEST_CONTAINER_NAME}"; then
+        log "DONE" "MySQL Temp Docker Container Removed"
+    else
+        log "ERROR" "Cannot Remove MySQL Temp Docker Container"
+        exit 1;
+    fi
+
+    if docker network rm "${MYSQL_TEST_NETWORK}"; then
+        log "DONE" "MySQL Temp Docker Network Removed"
+    else
+        log "ERROR" "Cannot Remove MySQL Temp Docker Network"
+        exit 1;
+    fi
+
+
+    if find "$MYSQL_TEST_DATA_DIR" -mindepth 1 -delete; then
+        log "DONE" "MySQL Temp Docker Data Removed"
+    else
+        log "ERROR" "Failed To Remove MySQL Temp Docker Data"
+        exit 1;
+    fi
+}
 
 setup_temp_mysql() {
     if docker_xtrabackup_exec "--copy-back --target-dir=/backup/full --datadir=/var/lib/mysql_new"; then 
         if docker network create "${MYSQL_TEST_NETWORK}"; then
-            docker run -d -it \
+            docker run -d \
                 --user "${MYSQL_TEST_CONTAINER_UID}" \
                 --name "${MYSQL_TEST_CONTAINER_NAME}" \
                 --volume "${MYSQL_TEST_DATA_DIR}:/var/lib/mysql" \
                 --network "${MYSQL_TEST_NETWORK}" \
                 --publish "${MYSQL_TEST_HOST_PORT}:3306" \
                 "${MYSQL_TEST_IMAGE}"
+            if check_mysql_state; then 
+                clean_temp_mysql
+                log "DONE" "Test Data On MySQL Temp Successfully"
+            else
+                clean_temp_mysql
+                log "ERROR" "Can Not Excute Test Data On MySQL Temp"
+                exit 1;
+            fi
         fi
     fi
 }
@@ -204,7 +251,5 @@ main() {
         inc_backup
     fi
 }
-
-
 
 main

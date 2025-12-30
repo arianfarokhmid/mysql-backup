@@ -1,18 +1,24 @@
 #!/bin/bash
-MYSQL_BACKUP_DIR=/database/inc-backup
-MYSQL_DATA_HOST=/db-data
-MYSQL_USER=inc_backuper
-MYSQL_PASSWORD=pass
+MYSQL_BACKUP_DIR=/opt/mysql-inc-dev-backup/backup
+MYSQL_DATA_HOST=/opt/mysql/data2/
+MYSQL_USER=
+MYSQL_PASSWORD=
 MYSQL_PORT=3306
-MYSQL_HOST=127.0.0.1
-MYSQL_DOCKER_NETWORK="host"
+MYSQL_HOST=mysql-dev
+MYSQL_DOCKER_NETWORK="mysql"
 
+MYSQL_TEST_IMAGE="mysql:8.0.43"
+MYSQL_TEST_CONTAINER_NAME="mysql-test-backup"
+MYSQL_TEST_CONTAINER_UID="999"
+MYSQL_TEST_DATA_DIR="/opt/mysql-inc-dev-backup/mysql-test-backup-data"
+MYSQL_TEST_NETWORK="mysql-test-backup-net"
+MYSQL_TEST_HOST_PORT="3309"
 
 CONTAINER_IMAGE=percona/percona-xtrabackup:8.0.35
 
 PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 
-MAX_INC_BACKUP_COUNT=2
+MAX_INC_BACKUP_COUNT=3
 
 SCRIPT_NAME=$(basename "$0")
 SCRIPT_LOG_FILE="/var/log/$SCRIPT_NAME-$(date '+%Y-%m-%d_%H-%M').log"
@@ -35,9 +41,9 @@ log() {
          '{timestamp: $ts, source: $src, status: $st, message: $msg}')
 
     # Send alert for ERROR or DONE
-    if [[ "$status" == "ERROR" ]]; then
-        curl -s -X POST "https://gn.azkiloan.com/alerts-test" -H "Content-Type: application/json" -d "$json"
-    fi
+    # if [[ "$status" == "ERROR" ]]; then
+        # curl -s -X POST "https://gn.azkiloan.com/alerts-test" -H "Content-Type: application/json" -d "$json"
+    # fi
 
     echo "$json" | tee -a "$SCRIPT_LOG_FILE"
 }
@@ -48,6 +54,7 @@ docker_xtrabackup_exec() {
     docker run -u 999 --rm --network $MYSQL_DOCKER_NETWORK \
         -v "$MYSQL_DATA_HOST":/var/lib/mysql:ro \
         -v "$MYSQL_BACKUP_DIR":/backup \
+        -v "$MYSQL_TEST_DATA_DIR":/var/lib/mysql_new:rw \
         $CONTAINER_IMAGE \
         xtrabackup --user="$MYSQL_USER" --password="$MYSQL_PASSWORD" --host="$MYSQL_HOST" --port="$MYSQL_PORT" $extra_args
 }
@@ -141,6 +148,7 @@ merge_inc_to_full() {
             if docker_xtrabackup_exec "--prepare --apply-log-only --target-dir=/backup/full --incremental-dir=/backup/inc$i"; then
                 log "INFO" "Incremental backup inc$i merged with full"
                 merge_state=true
+                mv $target "$MYSQL_BACKUP_DIR/merged_inc$i"
             else
                 log "WARN" "Merge with full Incremental backup inc$i failed"
                 merge_state=false
@@ -158,19 +166,45 @@ merge_inc_to_full() {
 }
 
 
-
-inc_or_full() {
-    if [[ -d "$MYSQL_BACKUP_DIR/full/" ]]; then
-        if [[ ! -e "$MYSQL_BACKUP_DIR/full/xtrabackup_checkpoints" ]]; then 
-            full_backup
-        else
-            checks_inc_backups && inc_backup
+setup_temp_mysql() {
+    if docker_xtrabackup_exec "--copy-back --target-dir=/backup/full --datadir=/var/lib/mysql_new"; then 
+        if docker network create "${MYSQL_TEST_NETWORK}"; then
+            docker run -d -it \
+                --user "${MYSQL_TEST_CONTAINER_UID}" \
+                --name "${MYSQL_TEST_CONTAINER_NAME}" \
+                --volume "${MYSQL_TEST_DATA_DIR}:/var/lib/mysql" \
+                --network "${MYSQL_TEST_NETWORK}" \
+                --publish "${MYSQL_TEST_HOST_PORT}:3306" \
+                "${MYSQL_TEST_IMAGE}"
         fi
-    else
+    fi
+}
+
+main() {
+    local merged_inc_files
+
+    merged_inc_files=$(find "$MYSQL_BACKUP_DIR" -maxdepth 1 -name '*merged_inc*' | wc -l)
+
+    if [[ ! -d "$MYSQL_BACKUP_DIR/full" ]]; then
         full_backup
+        return
     fi
 
+    if [[ ! -f "$MYSQL_BACKUP_DIR/full/xtrabackup_checkpoints" ]]; then
+        full_backup
+        return
+    fi
+
+    if [[ "$merged_inc_files" -eq "$MAX_INC_BACKUP_COUNT" ]]; then
+        setup_temp_mysql
+        return
+    fi
+
+    if checks_inc_backups; then
+        inc_backup
+    fi
 }
 
 
-inc_or_full
+
+main

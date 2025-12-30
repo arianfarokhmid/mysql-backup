@@ -27,6 +27,7 @@ MAX_INC_BACKUP_COUNT=3
 SCRIPT_NAME=$(basename "$0")
 SCRIPT_LOG_FILE="$LOG_DIR/$SCRIPT_NAME-$(date '+%Y-%m-%d_%H-%M').log"
 
+FINAL_BACKUP_NAME="full-backup-$(date '+%Y-%m-%d_%H-%M').tar.gz"
 log() {
     local timestamp
     timestamp=$(date -u "+%Y-%m-%d %H:%M")
@@ -202,6 +203,20 @@ clean_temp_mysql() {
     else
         log "ERROR" "Failed To Remove MySQL Temp Docker Data"
         exit 1;
+    fi
+
+
+    if tar -czvf $FINAL_BACKUP_NAME $MYSQL_BACKUP_DIR/full; then 
+        log "DONE" "MySQL Full Data Compressed"
+        rm -rf $MYSQL_BACKUP_DIR/full
+        for (( i=1; i<=MAX_INC_BACKUP_COUNT; i++ )); do
+            target="$MYSQL_BACKUP_DIR/merged_inc$i"
+            if [[ -d "$target" ]]; then
+                rm -rf $target
+            fi
+        done
+    else
+        log "ERROR" "Failed To Compress MySQL Full Data"
     fi
 }
 

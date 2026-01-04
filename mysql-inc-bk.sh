@@ -22,7 +22,7 @@ LOG_DIR=/opt/mysql-inc-dev-backup/logs
 
 PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 
-MAX_INC_BACKUP_COUNT=3
+MAX_INC_BACKUP_COUNT=23
 
 SCRIPT_NAME=$(basename "$0")
 SCRIPT_LOG_FILE="$LOG_DIR/$SCRIPT_NAME-$(date '+%Y-%m-%d_%H-%M').log"
@@ -127,7 +127,7 @@ inc_backup() {
 
 
 checks_inc_backups() {
-    for inc_dir in $MYSQL_BACKUP_DIR/inc*
+    for inc_dir in $( ls -d $MYSQL_BACKUP_DIR/inc* | sort -V);
     do
         if [[ -d $inc_dir ]]; then 
             if [[ -e $inc_dir/xtrabackup_checkpoints  ]]; then

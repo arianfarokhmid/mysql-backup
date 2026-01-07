@@ -16,6 +16,9 @@ MYSQL_TEST_DATA_DIR="/opt/mysql-inc-dev-backup/mysql-test-backup-data"
 MYSQL_TEST_NETWORK="mysql-test-backup-net"
 MYSQL_TEST_HOST_PORT="3309"
 
+MYSQL_COMPRESSED_FILES_DIR=/opt/mysql-inc-dev-backup/final-backups
+MYSQL_COMPRESSED_FILES_NAME="$MYSQL_COMPRESSED_FILES_DIR/full-backup-$(date '+%Y-%m-%d_%H-%M').tar.gz"
+
 CONTAINER_IMAGE=percona/percona-xtrabackup:8.0.35
 
 LOG_DIR=/opt/mysql-inc-dev-backup/logs
@@ -27,7 +30,6 @@ MAX_INC_BACKUP_COUNT=23
 SCRIPT_NAME=$(basename "$0")
 SCRIPT_LOG_FILE="$LOG_DIR/$SCRIPT_NAME-$(date '+%Y-%m-%d_%H-%M').log"
 
-FINAL_BACKUP_NAME="full-backup-$(date '+%Y-%m-%d_%H-%M').tar.gz"
 log() {
     local timestamp
     timestamp=$(date -u "+%Y-%m-%d %H:%M")
@@ -206,7 +208,7 @@ clean_temp_mysql() {
     fi
 
 
-    if tar -czvf $FINAL_BACKUP_NAME $MYSQL_BACKUP_DIR/full; then 
+    if tar -czvf $MYSQL_COMPRESSED_FILES_NAME $MYSQL_BACKUP_DIR/full; then 
         log "DONE" "MySQL Full Data Compressed"
         rm -rf $MYSQL_BACKUP_DIR/full
         for (( i=1; i<=MAX_INC_BACKUP_COUNT; i++ )); do

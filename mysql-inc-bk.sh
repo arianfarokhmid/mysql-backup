@@ -27,12 +27,10 @@ PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 
 MAX_INC_BACKUP_COUNT=23
 
-SCRIPT_NAME=$(basename "$0")
-SCRIPT_LOG_FILE="$LOG_DIR/$SCRIPT_NAME-$(date '+%Y-%m-%d_%H-%M').log"
-
 log() {
-    local timestamp
-    timestamp=$(date -u "+%Y-%m-%d %H:%M")
+    SCRIPT_NAME=$(basename "$0")
+    SCRIPT_LOG_FILE="$LOG_DIR/$SCRIPT_NAME.log"
+    local timestamp=$(date -u "+%Y-%m-%d %H:%M")
     local source="${3:-$SCRIPT_NAME}"
     local status="$1"
     local message="$2"
@@ -47,7 +45,7 @@ log() {
     json=$(jq -n --arg ts "$timestamp" --arg src "$source" --arg st "$status" --arg msg "$message" \
          '{timestamp: $ts, source: $src, status: $st, message: $msg}')
 
-    # Send alert for ERROR or DONE
+    # Send alert for ERROR 
     if [[ "$status" == "ERROR" ]]; then
         curl -s -X POST "https://gn.azkiloan.com/alerts-test" -H "Content-Type: application/json" -d "$json"
     fi

@@ -18,26 +18,28 @@ MYSQL_TEST_HOST_PORT="3309"
 
 MYSQL_COMPRESSED_FILES_DIR=/opt/mysql-inc-dev-backup/final-backups
 MYSQL_COMPRESSED_FILES_NAME="$MYSQL_COMPRESSED_FILES_DIR/full-backup-$(date '+%Y-%m-%d_%H-%M').tar.gz"
-
+MYSQL_COMPRESSED_RETANTION_DAY=2
 CONTAINER_IMAGE=percona/percona-xtrabackup:8.0.35
-
-LOG_DIR=/opt/mysql-inc-dev-backup/logs
 
 PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 
 MAX_INC_BACKUP_COUNT=23
 
 log() {
-    SCRIPT_NAME=$(basename "$0")
-    SCRIPT_LOG_FILE="$LOG_DIR/$SCRIPT_NAME.log"
+    local test_mode=false
+
+    local script_name=$(basename "$0")
+    local log_dir="/opt/mysql-inc-dev-backup/logs"
+    local log_file="$log_dir/$script_name.log"
+
     local timestamp=$(date -u "+%Y-%m-%d %H:%M")
-    local source="${3:-$SCRIPT_NAME}"
+    local source="${3:-$script_name}"
     local status="$1"
     local message="$2"
 
     if [[ ! "$status" =~ ^(ERROR|DONE|INFO|WARN)$ ]]; then 
         jq -n --arg ts "$timestamp" --arg src "$source" --arg st "invalid" --arg msg "Invalid status: $status. Allowed: ERROR, DONE, INFO , WARN" \
-           '{timestamp: $ts, source: $src, status: $st, message: $msg}' | tee -a "$SCRIPT_LOG_FILE"
+           '{timestamp: $ts, source: $src, status: $st, message: $msg}' | tee -a "$log_file"
         return 1
     fi
 
@@ -47,10 +49,14 @@ log() {
 
     # Send alert for ERROR 
     if [[ "$status" == "ERROR" ]]; then
-        curl -s -X POST "https://gn.azkiloan.com/alerts-test" -H "Content-Type: application/json" -d "$json"
+        if [[ $test_mode == true ]]; then 
+            curl -s -X POST "https://gn.azkiloan.com/alerts-test" -H "Content-Type: application/json" -d "$json"
+        else
+            curl -s -X POST "https://gn.azkiloan.com/alerts" -H "Content-Type: application/json" -d "$json"
+        fi
     fi
 
-    echo "$json" | tee -a "$SCRIPT_LOG_FILE"
+    echo "$json" | tee -a "$log_file"
 }
 
 
@@ -218,6 +224,13 @@ clean_temp_mysql() {
     else
         log "ERROR" "Failed To Compress MySQL Full Data"
     fi
+
+
+    if clean_files_local; then
+        log "DONE" "Clean Old Backups Success"
+    else
+        log "ERROR" "Clean Old Backups Failed"
+    fi
 }
 
 setup_temp_mysql() {
@@ -240,6 +253,17 @@ setup_temp_mysql() {
             fi
         fi
     fi
+}
+
+clean_files_local() {
+
+    local max_days=$MYSQL_COMPRESSED_RETANTION_DAY
+    local cleanup_dir=$MYSQL_COMPRESSED_FILES_DIR
+
+    if [[ $max_days -gt 0 ]]; then 
+        find "$cleanup_dir" -type f -mtime +$max_days -exec rm -rf {} \;
+    fi  
+
 }
 
 main() {

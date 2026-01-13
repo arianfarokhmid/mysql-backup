@@ -17,7 +17,7 @@ MYSQL_TEST_NETWORK="mysql-test-backup-net"
 MYSQL_TEST_HOST_PORT="3309"
 
 MYSQL_COMPRESSED_FILES_DIR=/opt/mysql-inc-dev-backup/final-backups
-MYSQL_COMPRESSED_FILES_NAME="$MYSQL_COMPRESSED_FILES_DIR/full-backup-$(date '+%Y-%m-%d_%H-%M').tar.gz"
+MYSQL_COMPRESSED_FILES_NAME="$MYSQL_COMPRESSED_FILES_DIR/dev-backup-$(date '+%Y-%m-%d_%H-%M').tar.gz"
 MYSQL_COMPRESSED_RETANTION_DAY=2
 CONTAINER_IMAGE=percona/percona-xtrabackup:8.0.35
 
@@ -256,15 +256,45 @@ setup_temp_mysql() {
 }
 
 clean_files_local() {
-
     local max_days=$MYSQL_COMPRESSED_RETANTION_DAY
     local cleanup_dir=$MYSQL_COMPRESSED_FILES_DIR
 
     if [[ $max_days -gt 0 ]]; then 
         find "$cleanup_dir" -type f -mtime +$max_days -exec rm -rf {} \;
     fi  
+}
+
+clean_files_s3() {
+    local S3_ENDPOINT="https://s3.thr2.sotoon.ir"
+    local S3_BUCKET_NAME="backups"
+    local S3_BACKUP_DIR="dev-inc-database"
+    local FILTER_FILE="dev"
+
+    S3_BACKUP_LIST=$(aws s3 --endpoint-url $S3_ENDPOINT ls s3://$S3_BUCKET_NAME/$S3_BACKUP_DIR/ --recursive | sort | grep $FILTER_FILE)
+    S3_BACKUP_COUNT=$(echo "$S3_BACKUP_LIST" | wc -l)
+
+    if [ $S3_BACKUP_COUNT -gt $S3_MAX_BACKUPS ]; then
+        FILES_TO_DELETE=$((S3_BACKUP_COUNT - S3_MAX_BACKUPS))
+        log "There are $S3_BACKUP_COUNT backups, exceeding the limit by $FILES_TO_DELETE files."
+
+        FILES_TO_DELETE_LIST=$(echo "$S3_BACKUP_LIST" | head -n $FILES_TO_DELETE | awk '{print $4}')
+
+        for FILE in $FILES_TO_DELETE_LIST; do
+            log "Deleting the oldest file: $FILE"
+            if aws s3 --endpoint-url $S3_ENDPOINT rm s3://$S3_BUCKET_NAME/$FILE; then
+                log "Deleted: $FILE"
+            else
+                log "Failed to delete: $FILE"
+            fi
+        done
+
+        log "Cleanup completed. Now there are $S3_MAX_BACKUPS backups."
+    else
+        log "Backup count ($S3_BACKUP_COUNT) is within the limit ($S3_MAX_BACKUPS). No files to delete."
+    fi
 
 }
+
 
 main() {
     local merged_inc_files

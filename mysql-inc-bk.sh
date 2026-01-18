@@ -21,6 +21,11 @@ MYSQL_COMPRESSED_FILES_NAME="$MYSQL_COMPRESSED_FILES_DIR/dev-backup-$(date '+%Y-
 MYSQL_COMPRESSED_RETANTION_DAY=2
 CONTAINER_IMAGE=percona/percona-xtrabackup:8.0.35
 
+S3_ENDPOINT="https://s3.thr2.sotoon.ir"
+S3_BUCKET_NAME="backups"
+S3_BACKUP_DIR="dev-inc-database"
+
+
 PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 
 MAX_INC_BACKUP_COUNT=23
@@ -231,6 +236,19 @@ clean_temp_mysql() {
     else
         log "ERROR" "Clean Old Backups Failed"
     fi
+
+    if upload_files_s3; then
+        log "DONE" "Upload Backup To S3 Success"
+    else
+        log "ERROR" "Failed To Upload Backup To S3"
+    fi
+
+
+    if clean_files_s3; then
+        log "DONE" "Clean Old S3 Backups Success"
+    else
+        log "ERROR" "Clean Old S3 Backups Failed"
+    fi
 }
 
 setup_temp_mysql() {
@@ -264,10 +282,11 @@ clean_files_local() {
     fi  
 }
 
+upload_files_s3() {  
+    aws s3 --endpoint-url $S3_ENDPOINT cp $MYSQL_COMPRESSED_FILES_NAME s3://$S3_BUCKET_NAME/$S3_BACKUP_DIR/;
+}
+
 clean_files_s3() {
-    local S3_ENDPOINT="https://s3.thr2.sotoon.ir"
-    local S3_BUCKET_NAME="backups"
-    local S3_BACKUP_DIR="dev-inc-database"
     local FILTER_FILE="dev"
 
     S3_BACKUP_LIST=$(aws s3 --endpoint-url $S3_ENDPOINT ls s3://$S3_BUCKET_NAME/$S3_BACKUP_DIR/ --recursive | sort | grep $FILTER_FILE)
@@ -280,17 +299,17 @@ clean_files_s3() {
         FILES_TO_DELETE_LIST=$(echo "$S3_BACKUP_LIST" | head -n $FILES_TO_DELETE | awk '{print $4}')
 
         for FILE in $FILES_TO_DELETE_LIST; do
-            log "Deleting the oldest file: $FILE"
+            log "INFO" "Deleting the oldest file: $FILE"
             if aws s3 --endpoint-url $S3_ENDPOINT rm s3://$S3_BUCKET_NAME/$FILE; then
-                log "Deleted: $FILE"
+                log "DONE" "Deleted: $FILE"
             else
-                log "Failed to delete: $FILE"
+                log "ERROR" "Failed to delete: $FILE"
             fi
         done
 
-        log "Cleanup completed. Now there are $S3_MAX_BACKUPS backups."
+        log "DONE" "Cleanup completed. Now there are $S3_MAX_BACKUPS backups."
     else
-        log "Backup count ($S3_BACKUP_COUNT) is within the limit ($S3_MAX_BACKUPS). No files to delete."
+        log "WARN" "Backup count ($S3_BACKUP_COUNT) is within the limit ($S3_MAX_BACKUPS). No files to delete."
     fi
 
 }

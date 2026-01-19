@@ -16,8 +16,9 @@ MYSQL_TEST_DATA_DIR="/opt/mysql-inc-dev-backup/mysql-test-backup-data"
 MYSQL_TEST_NETWORK="mysql-test-backup-net"
 MYSQL_TEST_HOST_PORT="3309"
 
+MYSQL_COMPRESSED_FILTER_FILE="dev"
 MYSQL_COMPRESSED_FILES_DIR=/opt/mysql-inc-dev-backup/final-backups
-MYSQL_COMPRESSED_FILES_NAME="$MYSQL_COMPRESSED_FILES_DIR/dev-backup-$(date '+%Y-%m-%d_%H-%M').tar.gz"
+MYSQL_COMPRESSED_FILES_NAME="$MYSQL_COMPRESSED_FILES_DIR/$MYSQL_COMPRESSED_FILTER_FILE-backup-$(date '+%Y-%m-%d_%H-%M').tar.gz"
 MYSQL_COMPRESSED_RETANTION_DAY=2
 CONTAINER_IMAGE=percona/percona-xtrabackup:8.0.35
 
@@ -287,9 +288,7 @@ upload_files_s3() {
 }
 
 clean_files_s3() {
-    local FILTER_FILE="dev"
-
-    S3_BACKUP_LIST=$(aws s3 --endpoint-url $S3_ENDPOINT ls s3://$S3_BUCKET_NAME/$S3_BACKUP_DIR/ --recursive | sort | grep $FILTER_FILE)
+    S3_BACKUP_LIST=$(aws s3 --endpoint-url $S3_ENDPOINT ls s3://$S3_BUCKET_NAME/$S3_BACKUP_DIR/ --recursive | sort | grep $MYSQL_COMPRESSED_FILTER_FILE)
     S3_BACKUP_COUNT=$(echo "$S3_BACKUP_LIST" | wc -l)
 
     if [ $S3_BACKUP_COUNT -gt $S3_MAX_BACKUPS ]; then

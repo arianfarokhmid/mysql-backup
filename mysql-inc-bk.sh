@@ -29,7 +29,7 @@ S3_BACKUP_DIR="dev-inc-database"
 
 PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 
-MAX_INC_BACKUP_COUNT=23
+MAX_INC_BACKUP_COUNT=13
 
 log() {
     local test_mode=false
@@ -238,18 +238,18 @@ clean_temp_mysql() {
         log "ERROR" "Clean Old Backups Failed"
     fi
 
+    if clean_files_s3; then
+        log "DONE" "Clean Old S3 Backups Success"
+    else
+        log "ERROR" "Clean Old S3 Backups Failed"
+    fi
+
     if upload_files_s3; then
         log "DONE" "Upload Backup To S3 Success"
     else
         log "ERROR" "Failed To Upload Backup To S3"
     fi
 
-
-    if clean_files_s3; then
-        log "DONE" "Clean Old S3 Backups Success"
-    else
-        log "ERROR" "Clean Old S3 Backups Failed"
-    fi
 }
 
 setup_temp_mysql() {
@@ -291,7 +291,7 @@ clean_files_s3() {
     S3_BACKUP_LIST=$(aws s3 --endpoint-url $S3_ENDPOINT ls s3://$S3_BUCKET_NAME/$S3_BACKUP_DIR/ --recursive | sort | grep $MYSQL_COMPRESSED_FILTER_FILE)
     S3_BACKUP_COUNT=$(echo "$S3_BACKUP_LIST" | wc -l)
 
-    if [ $S3_BACKUP_COUNT -gt $S3_MAX_BACKUPS ]; then
+    if [[ $S3_BACKUP_COUNT -gt $S3_MAX_BACKUPS ]]; then
         FILES_TO_DELETE=$((S3_BACKUP_COUNT - S3_MAX_BACKUPS))
         log "There are $S3_BACKUP_COUNT backups, exceeding the limit by $FILES_TO_DELETE files."
 

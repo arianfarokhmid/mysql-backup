@@ -29,7 +29,7 @@ S3_BACKUP_DIR="dev-inc-database"
 
 PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 
-MAX_INC_BACKUP_COUNT=13
+MAX_INC_BACKUP_COUNT=23
 
 log() {
     local test_mode=false

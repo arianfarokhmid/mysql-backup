@@ -288,7 +288,7 @@ upload_files_s3() {
 }
 
 clean_files_s3() {
-    S3_BACKUP_LIST=$(aws s3 --endpoint-url $S3_ENDPOINT ls s3://$S3_BUCKET_NAME/$S3_BACKUP_DIR/ --recursive | sort | grep $MYSQL_COMPRESSED_FILTER_FILE)
+    S3_BACKUP_LIST=$(aws s3 --endpoint-url $S3_ENDPOINT ls s3://$S3_BUCKET_NAME/$S3_BACKUP_DIR/ --recursive | sort | grep '$MYSQL_COMPRESSED_FILTER_FILE-backup')
     S3_BACKUP_COUNT=$(echo "$S3_BACKUP_LIST" | wc -l)
 
     if [[ $S3_BACKUP_COUNT -gt $S3_MAX_BACKUPS ]]; then
@@ -315,9 +315,8 @@ clean_files_s3() {
 
 
 main() {
-    local merged_inc_files
 
-    merged_inc_files=$(find "$MYSQL_BACKUP_DIR" -maxdepth 1 -name '*merged_inc*' | wc -l)
+    local merged_inc_files=$(find "$MYSQL_BACKUP_DIR" -maxdepth 1 -name '*merged_inc*' | wc -l)
 
     if [[ ! -d "$MYSQL_BACKUP_DIR/full" ]]; then
         full_backup

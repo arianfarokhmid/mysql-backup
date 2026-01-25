@@ -25,7 +25,7 @@ CONTAINER_IMAGE=percona/percona-xtrabackup:8.0.35
 S3_ENDPOINT="https://s3.thr2.sotoon.ir"
 S3_BUCKET_NAME="backups"
 S3_BACKUP_DIR="dev-inc-database"
-
+S3_MAX_BACKUPS=2
 
 PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 

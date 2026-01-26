@@ -7,7 +7,7 @@ MYSQL_PORT=3306
 MYSQL_HOST=mysql-dev
 MYSQL_DOCKER_NETWORK="mysql"
 
-MYSQL_COMPRESSED_FILTER_FILE="dev"
+MYSQL_COMPRESSED_FILTER_FILE="dev-full"
 MYSQL_COMPRESSED_FILES_DIR=/opt/mysql-inc-dev-backup/final-backups
 MYSQL_COMPRESSED_FILES_NAME="$MYSQL_COMPRESSED_FILES_DIR/$MYSQL_COMPRESSED_FILTER_FILE-backup-$(date '+%Y-%m-%d_%H-%M').tar.gz"
 MYSQL_COMPRESSED_RETANTION_DAY=2
@@ -68,60 +68,32 @@ docker_xtrabackup_exec() {
 
 
 apply_log () {
-    docker_xtrabackup_exec "--prepare --target-dir=/backup/full"
+    if docker_xtrabackup_exec "--prepare --target-dir=/backup/full"; then 
+        log "DONE" "apply log success"
+    else
+        log "ERROR" "apply log failed"
+    fi
 }
 
 full_backup() {
     [[ -d "$MYSQL_BACKUP_DIR" ]] || { log "ERROR" "Dir $MYSQL_BACKUP_DIR Not Exist"; exit 1; }
     rm -rf "$MYSQL_BACKUP_DIR"/*
     mkdir -p "$MYSQL_BACKUP_DIR/full"
-    docker_xtrabackup_exec "--backup --target-dir=/backup/full"
-    apply_log
-}
-
-
-
-
-
-merge_inc_to_full() {
-    local merge_state
-    docker_xtrabackup_exec "--prepare  --apply-log-only --target-dir=/backup/full"
-    for (( i=1; i<=MAX_INC_BACKUP_COUNT; i++ )); do
-        target="$MYSQL_BACKUP_DIR/inc$i"
-        if [[ -d "$target" ]]; then
-            if docker_xtrabackup_exec "--prepare --apply-log-only --target-dir=/backup/full --incremental-dir=/backup/inc$i"; then
-                log "INFO" "Incremental backup inc$i merged with full"
-                merge_state=true
-                mv $target "$MYSQL_BACKUP_DIR/merged_inc$i"
-            else
-                log "WARN" "Merge with full Incremental backup inc$i failed"
-                merge_state=false
-            fi
-        fi
-    done    
-
-    if [[ "$merge_state" == true ]]; then 
+    if docker_xtrabackup_exec "--backup --target-dir=/backup/full"; then 
         apply_log
+        finalize_backups
     else
-        log "ERROR" "Incremental backup Merges Failed"
-        exit 1;
+        log "ERROR" "Failed To Get Full Backup"
     fi
-    
 }
 
 
 
-clean_temp_mysql() {
+finalize_backups() {
     
     if tar -czvf $MYSQL_COMPRESSED_FILES_NAME $MYSQL_BACKUP_DIR/full; then 
         log "DONE" "MySQL Full Data Compressed"
         rm -rf $MYSQL_BACKUP_DIR/full
-        for (( i=1; i<=MAX_INC_BACKUP_COUNT; i++ )); do
-            target="$MYSQL_BACKUP_DIR/merged_inc$i"
-            if [[ -d "$target" ]]; then
-                rm -rf $target
-            fi
-        done
     else
         log "ERROR" "Failed To Compress MySQL Full Data"
     fi
@@ -185,6 +157,7 @@ clean_files_s3() {
     fi
 
 }
+
 
 
 main() {

@@ -1,5 +1,5 @@
 #!/bin/bash
-MYSQL_BACKUP_DIR=/opt/mysql-inc-dev-backup/backup
+MYSQL_BACKUP_DIR=/opt/mysql-inc-dev-backup/backup_2
 MYSQL_DATA_HOST=/opt/mysql/data2/
 MYSQL_USER=bkpuser
 MYSQL_PASSWORD=jRhBEXFo2waHL23PlocT9szn3ZuN
@@ -15,13 +15,13 @@ CONTAINER_IMAGE=percona/percona-xtrabackup:8.0.35
 
 S3_ENDPOINT="https://s3.thr2.sotoon.ir"
 S3_BUCKET_NAME="backups"
-S3_BACKUP_DIR="dev-inc-database"
+S3_BACKUP_DIR="full-percona-database"
 S3_MAX_BACKUPS=2
 
 PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 
 log() {
-    local test_mode=false
+    local test_mode=true
 
     local script_name=$(basename "$0")
     local log_dir="/opt/mysql-inc-dev-backup/logs"
@@ -60,7 +60,6 @@ docker_xtrabackup_exec() {
     docker run -u 999 --rm --network $MYSQL_DOCKER_NETWORK \
         -v "$MYSQL_DATA_HOST":/var/lib/mysql:ro \
         -v "$MYSQL_BACKUP_DIR":/backup \
-        -v "$MYSQL_TEST_DATA_DIR":/var/lib/mysql_new:rw \
         $CONTAINER_IMAGE \
         xtrabackup --user="$MYSQL_USER" --password="$MYSQL_PASSWORD" --host="$MYSQL_HOST" --port="$MYSQL_PORT" $extra_args
 }

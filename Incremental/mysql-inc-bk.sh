@@ -29,7 +29,7 @@ S3_MAX_BACKUPS=2
 
 PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 
-MAX_INC_BACKUP_COUNT=96
+MAX_INC_BACKUP_COUNT=1
 
 log() {
     local test_mode=false
@@ -96,15 +96,20 @@ verify_chain() {
 
 
 apply_log () {
-    docker_xtrabackup_exec "--prepare --target-dir=/backup/full"
+    if ! docker_xtrabackup_exec "--prepare --target-dir=/backup/full"; then 
+        log "ERROR" "Failed To Apply Log"
+    fi
 }
 
 full_backup() {
     [[ -d "$MYSQL_BACKUP_DIR" ]] || { log "ERROR" "Dir $MYSQL_BACKUP_DIR Not Exist"; exit 1; }
     rm -rf "$MYSQL_BACKUP_DIR"/*
     mkdir -p "$MYSQL_BACKUP_DIR/full"
-    docker_xtrabackup_exec "--backup --target-dir=/backup/full"
-    apply_log
+    if docker_xtrabackup_exec "--backup --target-dir=/backup/full"; then 
+        apply_log
+    else
+        log "ERROR" "Can Create Full Backup"
+    fi
 }
 
 inc_backup() {
@@ -193,6 +198,32 @@ check_mysql_state() {
     return 1 
 }
 
+setup_temp_mysql() {
+    if docker_xtrabackup_exec "--copy-back --target-dir=/backup/full --datadir=/var/lib/mysql_new"; then 
+        if docker network create "${MYSQL_TEST_NETWORK}"; then
+            docker run -d \
+                --user "${MYSQL_TEST_CONTAINER_UID}" \
+                --name "${MYSQL_TEST_CONTAINER_NAME}" \
+                --volume "${MYSQL_TEST_DATA_DIR}:/var/lib/mysql" \
+                --network "${MYSQL_TEST_NETWORK}" \
+                --publish "${MYSQL_TEST_HOST_PORT}:3306" \
+                "${MYSQL_TEST_IMAGE}"
+            if check_mysql_state; then 
+                clean_temp_mysql
+                log "DONE" "Test Data On MySQL Temp Successfully"
+            else
+                clean_temp_mysql
+                log "ERROR" "Can Not Excute Test Data On MySQL Temp"
+                exit 1;
+            fi
+        else
+            log "ERROR" "Failed To Create MySQL Test Network"
+        fi
+    else
+        log "ERROR" "Failed To Copy Backup Data To MySQL Test Container"
+    fi
+}
+
 
 clean_temp_mysql() {
     if docker rm -f "${MYSQL_TEST_CONTAINER_NAME}"; then
@@ -233,9 +264,9 @@ clean_temp_mysql() {
 
 
     if clean_files_local; then
-        log "DONE" "Clean Old Backups Success"
+        log "DONE" "Clean Old Backups On Local Success"
     else
-        log "ERROR" "Clean Old Backups Failed"
+        log "ERROR" "Clean Old Backups On Local Failed"
     fi
 
     if clean_files_s3; then
@@ -252,34 +283,9 @@ clean_temp_mysql() {
 
 }
 
-setup_temp_mysql() {
-    if docker_xtrabackup_exec "--copy-back --target-dir=/backup/full --datadir=/var/lib/mysql_new"; then 
-        if docker network create "${MYSQL_TEST_NETWORK}"; then
-            docker run -d \
-                --user "${MYSQL_TEST_CONTAINER_UID}" \
-                --name "${MYSQL_TEST_CONTAINER_NAME}" \
-                --volume "${MYSQL_TEST_DATA_DIR}:/var/lib/mysql" \
-                --network "${MYSQL_TEST_NETWORK}" \
-                --publish "${MYSQL_TEST_HOST_PORT}:3306" \
-                "${MYSQL_TEST_IMAGE}"
-            if check_mysql_state; then 
-                clean_temp_mysql
-                log "DONE" "Test Data On MySQL Temp Successfully"
-            else
-                clean_temp_mysql
-                log "ERROR" "Can Not Excute Test Data On MySQL Temp"
-                exit 1;
-            fi
-        fi
-    fi
-}
-
 clean_files_local() {
-    local max_days=$MYSQL_COMPRESSED_RETANTION_DAY
-    local cleanup_dir=$MYSQL_COMPRESSED_FILES_DIR
-
-    if [[ $max_days -gt 0 ]]; then 
-        find "$cleanup_dir" -type f -mtime +$max_days -exec rm -rf {} \;
+    if [[ $MYSQL_COMPRESSED_RETANTION_DAY -gt 0 ]]; then 
+        find "$MYSQL_COMPRESSED_FILES_DIR" -type f -mtime +$MYSQL_COMPRESSED_RETANTION_DAY -exec rm -rf {} \;
     fi  
 }
 
@@ -308,7 +314,7 @@ clean_files_s3() {
 
         log "DONE" "Cleanup completed. Now there are $S3_MAX_BACKUPS backups."
     else
-        log "WARN" "Backup count ($S3_BACKUP_COUNT) is within the limit ($S3_MAX_BACKUPS). No files to delete."
+        log "WARN" "Backup count In S3($S3_BACKUP_COUNT) is within the limit ($S3_MAX_BACKUPS). No files to delete."
     fi
 
 }

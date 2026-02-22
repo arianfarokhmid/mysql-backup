@@ -32,7 +32,7 @@ PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 MAX_INC_BACKUP_COUNT=1
 
 log() {
-    local test_mode=false
+    local test_mode=true
 
     local script_name=$(basename "$0")
     local log_dir="/opt/mysql-inc-dev-backup/logs"
@@ -198,6 +198,16 @@ check_mysql_state() {
     return 1 
 }
 
+check_temp_mysql_dir() {
+    if ! [ -z "$(ls -A $MYSQL_TEST_DATA_DIR)" ]; then
+        if rm -rf $MYSQL_TEST_DATA_DIR/*; then 
+            log "DONE" "MySQL Test Dir Cleaned"
+        else
+            log "ERROR" "Failed To Clean MySQL Test Dir Data"
+        fi
+    fi
+}
+
 setup_temp_mysql() {
     if docker_xtrabackup_exec "--copy-back --target-dir=/backup/full --datadir=/var/lib/mysql_new"; then 
         if docker network create "${MYSQL_TEST_NETWORK}"; then
@@ -264,9 +274,9 @@ clean_temp_mysql() {
 
 
     if clean_files_local; then
-        log "DONE" "Clean Old Backups On Local Success"
+        log "DONE" "Clean Old Backups Success"
     else
-        log "ERROR" "Clean Old Backups On Local Failed"
+        log "ERROR" "Clean Old Backups Failed"
     fi
 
     if clean_files_s3; then
@@ -314,7 +324,7 @@ clean_files_s3() {
 
         log "DONE" "Cleanup completed. Now there are $S3_MAX_BACKUPS backups."
     else
-        log "WARN" "Backup count In S3($S3_BACKUP_COUNT) is within the limit ($S3_MAX_BACKUPS). No files to delete."
+        log "WARN" "Backup count ($S3_BACKUP_COUNT) is within the limit ($S3_MAX_BACKUPS). No files to delete."
     fi
 
 }
@@ -335,7 +345,9 @@ main() {
     fi
 
     if [[ "$merged_inc_files" -eq "$MAX_INC_BACKUP_COUNT" ]]; then
-        setup_temp_mysql
+        if check_temp_mysql_dir; then
+            setup_temp_mysql
+        fi
         return
     fi
 

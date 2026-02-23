@@ -190,7 +190,7 @@ merge_inc_to_full() {
 check_mysql_state() {
     local retries=240
     for i in $(seq 1 "$retries"); do
-        if docker exec -it $MYSQL_TEST_CONTAINER_NAME mysql -u $MYSQL_TEST_USERNAME -p"$MYSQL_TEST_PASSWORD" -D azki_loan -e "select * from ticket order by id desc LIMIT 10;"; then
+        if docker exec -i $MYSQL_TEST_CONTAINER_NAME mysql -u $MYSQL_TEST_USERNAME -p"$MYSQL_TEST_PASSWORD" -D azki_loan -e "select * from ticket order by id desc LIMIT 10;"; then
             return 0
         fi
         sleep 1

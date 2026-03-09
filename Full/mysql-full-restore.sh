@@ -1,4 +1,194 @@
+#!/bin/bash
+MYSQL_BACKUP_DIR=/db-backup/full_backup
+MYSQL_DATA_HOST=/db-data
+MYSQL_USER=
+MYSQL_PASSWORD=
+MYSQL_PORT=3306
+MYSQL_HOST=127.0.0.1
+MYSQL_DOCKER_NETWORK="host"
+
+MYSQL_COMPRESSED_FILTER_FILE="full"
+MYSQL_COMPRESSED_FILES_DIR=/db-backup/full_compressed
+MYSQL_COMPRESSED_FILES_NAME="$MYSQL_COMPRESSED_FILES_DIR/$MYSQL_COMPRESSED_FILTER_FILE-backup-$(date '+%Y-%m-%d_%H-%M').tar.gz"
+MYSQL_COMPRESSED_RETANTION_DAY=2
+CONTAINER_IMAGE=percona/percona-xtrabackup:8.0.35
+
 S3_ENDPOINT="https://s3.thr2.sotoon.ir"
 S3_BUCKET_NAME="backups"
-S3_BACKUP_DIR="full-percona-database"
+S3_BACKUP_DIR="full-inc-database"
 S3_MAX_BACKUPS=2
+
+PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+
+MAX_INC_BACKUP_COUNT=1
+
+log() {
+    local test_mode=true
+
+    local script_name=$(basename "$0")
+    local log_dir="/db-backup/log"
+    local log_file="$log_dir/$script_name.log"
+
+    local timestamp=$(date -u "+%Y-%m-%d %H:%M")
+    local source="${3:-$script_name}"
+    local status="$1"
+    local message="$2"
+
+    if [[ ! "$status" =~ ^(ERROR|DONE|INFO|WARN)$ ]]; then 
+        jq -n --arg ts "$timestamp" --arg src "$source" --arg st "invalid" --arg msg "Invalid status: $status. Allowed: ERROR, DONE, INFO , WARN" \
+           '{timestamp: $ts, source: $src, status: $st, message: $msg}' | tee -a "$log_file"
+        return 1
+    fi
+
+   local json
+    json=$(jq -n --arg ts "$timestamp" --arg src "$source" --arg st "$status" --arg msg "$message" \
+         '{timestamp: $ts, source: $src, status: $st, message: $msg}')
+
+    # Send alert for ERROR 
+    if [[ "$status" == "ERROR" ]]; then
+        if [[ $test_mode == true ]]; then 
+            curl -s -X POST "https://gn.azkiloan.com/alerts-test" -H "Content-Type: application/json" -d "$json"
+        else
+            curl -s -X POST "https://gn.azkiloan.com/alerts" -H "Content-Type: application/json" -d "$json"
+        fi
+    fi
+
+    echo "$json" | tee -a "$log_file"
+}
+
+
+docker_xtrabackup_exec() {
+    local extra_args=$1
+    docker run -u 999 --rm --network $MYSQL_DOCKER_NETWORK \
+        -v "$MYSQL_DATA_HOST":/var/lib/mysql:ro \
+        -v "$MYSQL_BACKUP_DIR":/backup \
+        $CONTAINER_IMAGE \
+        xtrabackup --user="$MYSQL_USER" --password="$MYSQL_PASSWORD" --host="$MYSQL_HOST" --port="$MYSQL_PORT" $extra_args
+}
+
+verify_chain() {
+    local prev_dir=$1
+    local curr_dir=$2
+
+    # Extract LSNs using grep and awk
+    local prev_to_lsn=$(grep "to_lsn" "$prev_dir/xtrabackup_checkpoints" | awk '{print $3}')
+    local curr_from_lsn=$(grep "from_lsn" "$curr_dir/xtrabackup_checkpoints" | awk '{print $3}')
+
+    if [[ "$prev_to_lsn" == "$curr_from_lsn" ]]; then
+        log "INFO" "Chain Integrity OK: $prev_dir ($prev_to_lsn) -> $curr_dir ($curr_from_lsn)"
+        return 0
+    else
+        log "ERROR" "CORRUPTION DETECTED: Chain broken between $prev_dir and $curr_dir"
+        log "ERROR" "Expected: $prev_to_lsn, Found: $curr_from_lsn"
+        return 1
+    fi
+}
+
+
+apply_log () {
+    if ! docker_xtrabackup_exec "--prepare --target-dir=/backup/full"; then 
+        log "ERROR" "Failed To Apply Log"
+    fi
+}
+
+full_backup() {
+    [[ -d "$MYSQL_BACKUP_DIR" ]] || { log "ERROR" "Dir $MYSQL_BACKUP_DIR Not Exist"; exit 1; }
+    rm -rf "$MYSQL_BACKUP_DIR"/*
+    mkdir -p "$MYSQL_BACKUP_DIR/full"
+    if docker_xtrabackup_exec "--backup --target-dir=/backup/full"; then 
+        if apply_log; then 
+            clean_temp_mysql
+        fi
+    else
+        log "ERROR" "Can Create Full Backup"
+    fi
+}
+
+
+clean_temp_mysql() {
+
+    if tar -czvf $MYSQL_COMPRESSED_FILES_NAME $MYSQL_BACKUP_DIR/full; then 
+        log "DONE" "MySQL Full Data Compressed"
+        rm -rf $MYSQL_BACKUP_DIR/full
+        for (( i=1; i<=MAX_INC_BACKUP_COUNT; i++ )); do
+            target="$MYSQL_BACKUP_DIR/merged_inc$i"
+            if [[ -d "$target" ]]; then
+                rm -rf $target
+            fi
+        done
+    else
+        log "ERROR" "Failed To Compress MySQL Full Data"
+    fi
+
+
+    if clean_files_local; then
+        log "DONE" "Clean Old Backups Success"
+    else
+        log "ERROR" "Clean Old Backups Failed"
+    fi
+
+    if clean_files_s3; then
+        log "DONE" "Clean Old S3 Backups Success"
+    else
+        log "ERROR" "Clean Old S3 Backups Failed"
+    fi
+
+    if upload_files_s3; then
+        log "DONE" "Upload Backup To S3 Success"
+    else
+        log "ERROR" "Failed To Upload Backup To S3"
+    fi
+
+}
+
+clean_files_local() {
+    if [[ $MYSQL_COMPRESSED_RETANTION_DAY -gt 0 ]]; then 
+        find "$MYSQL_COMPRESSED_FILES_DIR" -type f -mtime +$MYSQL_COMPRESSED_RETANTION_DAY -exec rm -rf {} \;
+    fi  
+}
+
+upload_files_s3() {  
+    aws s3 --endpoint-url $S3_ENDPOINT cp $MYSQL_COMPRESSED_FILES_NAME s3://$S3_BUCKET_NAME/$S3_BACKUP_DIR/;
+}
+
+clean_files_s3() {
+    S3_BACKUP_LIST=$(aws s3 --endpoint-url $S3_ENDPOINT ls s3://$S3_BUCKET_NAME/$S3_BACKUP_DIR/ --recursive | sort | grep "$MYSQL_COMPRESSED_FILTER_FILE-backup")
+    S3_BACKUP_COUNT=$(echo "$S3_BACKUP_LIST" | wc -l)
+
+    if [[ $S3_BACKUP_COUNT -gt $S3_MAX_BACKUPS ]]; then
+        FILES_TO_DELETE=$((S3_BACKUP_COUNT - S3_MAX_BACKUPS))
+        log "WARN" "There are $S3_BACKUP_COUNT backups, exceeding the limit by $FILES_TO_DELETE files."
+
+        FILES_TO_DELETE_LIST=$(echo "$S3_BACKUP_LIST" | head -n $FILES_TO_DELETE | awk '{print $4}')
+
+        for FILE in $FILES_TO_DELETE_LIST; do
+            log "INFO" "Deleting the oldest file: $FILE"
+            if aws s3 --endpoint-url $S3_ENDPOINT rm s3://$S3_BUCKET_NAME/$FILE; then
+                log "DONE" "Deleted: $FILE"
+            else
+                log "ERROR" "Failed to delete: $FILE"
+            fi
+        done
+
+        log "DONE" "Cleanup completed. Now there are $S3_MAX_BACKUPS backups."
+    else
+        log "WARN" "Backup count ($S3_BACKUP_COUNT) is within the limit ($S3_MAX_BACKUPS). No files to delete."
+    fi
+
+}
+
+
+main() {
+    if [[ ! -d "$MYSQL_BACKUP_DIR/full" ]]; then
+        full_backup
+        return
+    fi
+
+    if [[ ! -f "$MYSQL_BACKUP_DIR/full/xtrabackup_checkpoints" ]]; then
+        full_backup
+        return
+    fi
+
+}
+
+main

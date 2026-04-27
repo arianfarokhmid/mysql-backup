@@ -1,4 +1,5 @@
 #!/bin/bash
+
 MYSQL_BACKUP_DIR=/opt/mysql-inc-dev-backup/backup
 MYSQL_DATA_HOST=/opt/mysql/data2/
 MYSQL_USER=bkpuser
@@ -7,11 +8,6 @@ MYSQL_PORT=3306
 MYSQL_HOST=mysql-dev
 MYSQL_DOCKER_NETWORK=mysql
 
-MYSQL_COMPRESSED_FILTER_FILE=dev
-MYSQL_COMPRESSED_FILES_DIR=/opt/mysql-inc-dev-backup/final-backups
-MYSQL_COMPRESSED_BASE_NAME="${MYSQL_COMPRESSED_FILES_DIR}/${MYSQL_COMPRESSED_FILTER_FILE}"
-MYSQL_COMPRESSED_FILES_NAME="${MYSQL_COMPRESSED_BASE_NAME}-backup-$(date '+%Y-%m-%d_%H-%M').tar.gz"
-MYSQL_COMPRESSED_RETANTION_DAY=2
 CONTAINER_IMAGE=percona/percona-xtrabackup:8.0.35
 
 S3_ENDPOINT=https://s3.thr2.sotoon.ir
@@ -55,6 +51,12 @@ log() {
     echo "$json" | tee -a "$log_file"
 }
 
+init_backup_name() {
+    if [[ -z $1 ]]; then MYSQL_COMPRESSED_FILTER_FILE=dev; else MYSQL_COMPRESSED_FILTER_FILE=$1; fi
+    MYSQL_COMPRESSED_BASE_NAME="${MYSQL_COMPRESSED_FILES_DIR}/${MYSQL_COMPRESSED_FILTER_FILE}"
+    MYSQL_COMPRESSED_FILES_NAME="${MYSQL_COMPRESSED_BASE_NAME}-backup-$(date '+%Y-%m-%d_%H-%M').tar.gz"
+    MYSQL_COMPRESSED_FILES_DIR=/opt/mysql-inc-dev-backup/final-backups
+}
 
 docker_xtrabackup_exec() {
     local extra_args=$1
@@ -65,8 +67,6 @@ docker_xtrabackup_exec() {
         $CONTAINER_IMAGE \
         xtrabackup --user="$MYSQL_USER" --password="$MYSQL_PASSWORD" --host="$MYSQL_HOST" --port="$MYSQL_PORT" $extra_args
 }
-
-
 
 apply_log () {
     if ! docker_xtrabackup_exec "--prepare --target-dir=/backup/full"; then 
@@ -89,11 +89,14 @@ full_backup() {
 }
 
 
+
 level1_tables() {
+    init_backup_name "high-level-1"
     full_backup --tables-file=/tmp/tables/level1.txt
 }
 
 level2_tables() {
+    init_backup_name "high-level-2"
     full_backup --tables-file=/tmp/tables/level2.txt
 }
 
@@ -180,5 +183,5 @@ main() {
 }
 
 # main
+init_backup_name
 level1_tables
-level2_tables

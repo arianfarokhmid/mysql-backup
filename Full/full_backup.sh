@@ -1,26 +1,21 @@
 #!/bin/bash
-MYSQL_BACKUP_DIR=/db-backup/full_backup
-MYSQL_DATA_HOST=/db-data
-MYSQL_USER=
-MYSQL_PASSWORD=
-MYSQL_PORT=3306
-MYSQL_HOST=127.0.0.1
-MYSQL_DOCKER_NETWORK="host"
 
-MYSQL_COMPRESSED_FILTER_FILE="full"
-MYSQL_COMPRESSED_FILES_DIR=/db-backup/full_compressed
-MYSQL_COMPRESSED_FILES_NAME="$MYSQL_COMPRESSED_FILES_DIR/$MYSQL_COMPRESSED_FILTER_FILE-backup-$(date '+%Y-%m-%d_%H-%M').tar.gz"
-MYSQL_COMPRESSED_RETANTION_DAY=2
+MYSQL_BACKUP_DIR=/opt/mysql-inc-dev-backup/backup
+MYSQL_DATA_HOST=/opt/mysql/data2/
+MYSQL_USER=bkpuser
+MYSQL_PASSWORD=jRhBEXFo2waHL23PlocT9szn3ZuN
+MYSQL_PORT=3306
+MYSQL_HOST=mysql-dev
+MYSQL_DOCKER_NETWORK=mysql
+
 CONTAINER_IMAGE=percona/percona-xtrabackup:8.0.35
 
-S3_ENDPOINT="https://s3.thr2.sotoon.ir"
-S3_BUCKET_NAME="backups"
-S3_BACKUP_DIR="full-inc-database"
+S3_ENDPOINT=https://s3.thr2.sotoon.ir
+S3_BUCKET_NAME=backups
+S3_BACKUP_DIR=dev-inc-database
 S3_MAX_BACKUPS=2
 
 PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
-
-MAX_INC_BACKUP_COUNT=1
 
 log() {
     local test_mode=true
@@ -56,34 +51,22 @@ log() {
     echo "$json" | tee -a "$log_file"
 }
 
+init_backup_name() {
+    if [[ -z $1 ]]; then MYSQL_COMPRESSED_FILTER_FILE=dev; else MYSQL_COMPRESSED_FILTER_FILE=$1; fi
+    MYSQL_COMPRESSED_BASE_NAME="${MYSQL_COMPRESSED_FILES_DIR}/${MYSQL_COMPRESSED_FILTER_FILE}"
+    MYSQL_COMPRESSED_FILES_NAME="${MYSQL_COMPRESSED_BASE_NAME}-backup-$(date '+%Y-%m-%d_%H-%M').tar.gz"
+    MYSQL_COMPRESSED_FILES_DIR=/opt/mysql-inc-dev-backup/final-backups
+}
 
 docker_xtrabackup_exec() {
     local extra_args=$1
     docker run -u 999 --rm --network $MYSQL_DOCKER_NETWORK \
         -v "$MYSQL_DATA_HOST":/var/lib/mysql:ro \
         -v "$MYSQL_BACKUP_DIR":/backup \
+        -v ./tables:/tmp/tables \
         $CONTAINER_IMAGE \
         xtrabackup --user="$MYSQL_USER" --password="$MYSQL_PASSWORD" --host="$MYSQL_HOST" --port="$MYSQL_PORT" $extra_args
 }
-
-verify_chain() {
-    local prev_dir=$1
-    local curr_dir=$2
-
-    # Extract LSNs using grep and awk
-    local prev_to_lsn=$(grep "to_lsn" "$prev_dir/xtrabackup_checkpoints" | awk '{print $3}')
-    local curr_from_lsn=$(grep "from_lsn" "$curr_dir/xtrabackup_checkpoints" | awk '{print $3}')
-
-    if [[ "$prev_to_lsn" == "$curr_from_lsn" ]]; then
-        log "INFO" "Chain Integrity OK: $prev_dir ($prev_to_lsn) -> $curr_dir ($curr_from_lsn)"
-        return 0
-    else
-        log "ERROR" "CORRUPTION DETECTED: Chain broken between $prev_dir and $curr_dir"
-        log "ERROR" "Expected: $prev_to_lsn, Found: $curr_from_lsn"
-        return 1
-    fi
-}
-
 
 apply_log () {
     if ! docker_xtrabackup_exec "--prepare --target-dir=/backup/full"; then 
@@ -92,10 +75,11 @@ apply_log () {
 }
 
 full_backup() {
+    local args=$1
     [[ -d "$MYSQL_BACKUP_DIR" ]] || { log "ERROR" "Dir $MYSQL_BACKUP_DIR Not Exist"; exit 1; }
     rm -rf "$MYSQL_BACKUP_DIR"/*
     mkdir -p "$MYSQL_BACKUP_DIR/full"
-    if docker_xtrabackup_exec "--backup --target-dir=/backup/full"; then 
+    if docker_xtrabackup_exec "--backup --target-dir=/backup/full $args"; then 
         if apply_log; then 
             clean_temp_mysql
         fi
@@ -105,39 +89,46 @@ full_backup() {
 }
 
 
+
+level1_tables() {
+    init_backup_name "high-level-1"
+    full_backup --tables-file=/tmp/tables/level1.txt
+}
+
+level2_tables() {
+    init_backup_name "high-level-2"
+    full_backup --tables-file=/tmp/tables/level2.txt
+}
+
+
 clean_temp_mysql() {
 
     if tar -czvf $MYSQL_COMPRESSED_FILES_NAME $MYSQL_BACKUP_DIR/full; then 
-        log "DONE" "MySQL Full Data Compressed"
-        rm -rf $MYSQL_BACKUP_DIR/full
-        for (( i=1; i<=MAX_INC_BACKUP_COUNT; i++ )); do
-            target="$MYSQL_BACKUP_DIR/merged_inc$i"
-            if [[ -d "$target" ]]; then
-                rm -rf $target
-            fi
-        done
+        if rm -rf $MYSQL_BACKUP_DIR/full; then
+            log "DONE" "MySQL Full Data Compressed"
+        fi
     else
         log "ERROR" "Failed To Compress MySQL Full Data"
     fi
 
 
-    if clean_files_local; then
-        log "DONE" "Clean Old Backups Success"
-    else
-        log "ERROR" "Clean Old Backups Failed"
-    fi
+   if clean_files_local; then
+       log "DONE" "Clean Old Backups Success"
+   else
+       log "ERROR" "Clean Old Backups Failed"
+   fi
 
-    if clean_files_s3; then
-        log "DONE" "Clean Old S3 Backups Success"
-    else
-        log "ERROR" "Clean Old S3 Backups Failed"
-    fi
+#    if clean_files_s3; then
+#        log "DONE" "Clean Old S3 Backups Success"
+#    else
+#        log "ERROR" "Clean Old S3 Backups Failed"
+#    fi
 
-    if upload_files_s3; then
-        log "DONE" "Upload Backup To S3 Success"
-    else
-        log "ERROR" "Failed To Upload Backup To S3"
-    fi
+#    if upload_files_s3; then
+#        log "DONE" "Upload Backup To S3 Success"
+#    else
+#        log "ERROR" "Failed To Upload Backup To S3"
+#    fi
 
 }
 
@@ -152,7 +143,7 @@ upload_files_s3() {
 }
 
 clean_files_s3() {
-    S3_BACKUP_LIST=$(aws s3 --endpoint-url $S3_ENDPOINT ls s3://$S3_BUCKET_NAME/$S3_BACKUP_DIR/ --recursive | sort | grep "$MYSQL_COMPRESSED_FILTER_FILE-backup")
+    S3_BACKUP_LIST=$(aws s3 --endpoint-url $S3_ENDPOINT ls s3://$S3_BUCKET_NAME/$S3_BACKUP_DIR/ --recursive | sort | grep "${MYSQL_COMPRESSED_FILTER_FILE}-backup")
     S3_BACKUP_COUNT=$(echo "$S3_BACKUP_LIST" | wc -l)
 
     if [[ $S3_BACKUP_COUNT -gt $S3_MAX_BACKUPS ]]; then
@@ -191,4 +182,6 @@ main() {
 
 }
 
-main
+# main
+init_backup_name
+level1_tables

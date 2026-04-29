@@ -107,17 +107,25 @@ apply_log () {
 
 # -- Basic Full Backup -- #
 
-full_backup() {
+first_backup() {
     local args=$1
     [[ -d "$MYSQL_BACKUP_DIR" ]] || { log "ERROR" "Dir $MYSQL_BACKUP_DIR Not Exist"; exit 1; }
     rm -rf "$MYSQL_BACKUP_DIR"/*
     mkdir -p "$MYSQL_BACKUP_DIR/full"
     if docker_xtrabackup_exec "--backup --target-dir=/backup/full $args"; then 
         if apply_log; then 
-            finialize_backup
+            log "DONE" "First Backup Created"
         fi
     else
-        log "ERROR" "Can Create Full Backup"
+        log "ERROR" "Can Create First Backup"
+    fi
+}
+
+## -- full_backup -- ##
+
+full_backup() {
+    if first_backup; then 
+        finialize_backup
     fi
 }
 
@@ -127,12 +135,12 @@ full_backup() {
 
 level1_tables() {
     init_backup_name "high-level-1"
-    full_backup --tables-file=/tmp/tables/level1.txt
+    first_backup --tables-file=/tmp/tables/level1.txt
 }
 
 level2_tables() {
     init_backup_name "high-level-2"
-    full_backup --tables-file=/tmp/tables/level2.txt
+    first_backup --tables-file=/tmp/tables/level2.txt
 }
 
 
@@ -363,18 +371,20 @@ clean_files_s3() {
 
 main() {
     init_backup_name
-    if [[ ! -d "$MYSQL_BACKUP_DIR/full" ]]; then
-        full_backup
+
+    if [[ ! -d "${MYSQL_BACKUP_DIR}/full" ]] || [[ ! -f "${MYSQL_BACKUP_DIR}/full/xtrabackup_checkpoints" ]]; then
+        first_backup
         return
     fi
 
-    if [[ ! -f "$MYSQL_BACKUP_DIR/full/xtrabackup_checkpoints" ]]; then
-        full_backup
+    if [[ "${merged_inc_files}" -eq "${MAX_INC_BACKUP_COUNT}" ]]; then
+        if check_temp_mysql_dir; then
+            setup_temp_mysql
+        fi
         return
     fi
 
+    if checks_inc_backups; then
+        inc_backup
+    fi
 }
-
-# main
-#init_backup_name
-#level1_tables

@@ -105,6 +105,8 @@ apply_log () {
     fi
 }
 
+# -- Basic Full Backup -- #
+
 full_backup() {
     local args=$1
     [[ -d "$MYSQL_BACKUP_DIR" ]] || { log "ERROR" "Dir $MYSQL_BACKUP_DIR Not Exist"; exit 1; }
@@ -119,6 +121,23 @@ full_backup() {
     fi
 }
 
+
+## -- Table Level Backup -- #
+
+
+level1_tables() {
+    init_backup_name "high-level-1"
+    full_backup --tables-file=/tmp/tables/level1.txt
+}
+
+level2_tables() {
+    init_backup_name "high-level-2"
+    full_backup --tables-file=/tmp/tables/level2.txt
+}
+
+
+
+# -- Incremental Functions -- #
 
 inc_backup() {
     for (( i=1; i<=MAX_INC_BACKUP_COUNT; i++ )); do
@@ -170,41 +189,55 @@ checks_inc_backups() {
 
 
 merge_inc_to_full() {
-    local merge_state
-    docker_xtrabackup_exec "--prepare  --apply-log-only --target-dir=/backup/full"
+
+    if ! docker_xtrabackup_exec "--prepare --apply-log-only --target-dir=/backup/full"; then
+        log "ERROR" "Failed to prepare base full backup"
+        exit 1
+    fi
+
     for (( i=1; i<=MAX_INC_BACKUP_COUNT; i++ )); do
-        target="$MYSQL_BACKUP_DIR/inc$i"
+        local target="$MYSQL_BACKUP_DIR/inc$i"
+        
         if [[ -d "$target" ]]; then
             if docker_xtrabackup_exec "--prepare --apply-log-only --target-dir=/backup/full --incremental-dir=/backup/inc$i"; then
                 log "INFO" "Incremental backup inc$i merged with full"
-                merge_state=true
-                mv $target "$MYSQL_BACKUP_DIR/merged_inc$i"
+                mv "$target" "$MYSQL_BACKUP_DIR/merged_inc$i"
             else
-                log "WARN" "Merge with full Incremental backup inc$i failed"
-                merge_state=false
+                log "ERROR" "Merge with full Incremental backup inc$i failed"
+                exit 1
             fi
         fi
     done    
 
-    if [[ "$merge_state" == true ]]; then 
-        apply_log
-    else
-        log "ERROR" "Incremental backup Merges Failed"
-        exit 1;
-    fi
-    
+    apply_log
 }
+
+
+
+
+# -- Test Final Backup File -- #
 
 check_mysql_state() {
     local retries=240
-    for i in $(seq 1 "$retries"); do
-        if docker exec -i $MYSQL_TEST_CONTAINER_NAME mysql -u $MYSQL_TEST_USERNAME -p"$MYSQL_TEST_PASSWORD" -D azki_loan -e "select * from ticket order by id desc LIMIT 10;"; then
+    local attempt=1
+
+    while [ "$attempt" -le "$retries" ]; do
+        if docker exec -i "${MYSQL_TEST_CONTAINER_NAME}" mysql \
+            -u "${MYSQL_TEST_USERNAME}" \
+            -p"${MYSQL_TEST_PASSWORD}" \
+            -D "azki_loan" \
+            -e "SELECT * FROM ticket ORDER BY id DESC LIMIT 10;" &> /dev/null; 
+        then
             return 0
         fi
+        
         sleep 1
+        ((attempt++))
     done
+
     return 1 
 }
+
 
 check_temp_mysql_dir() {
     if ! [ -z "$(ls -A $MYSQL_TEST_DATA_DIR)" ]; then
@@ -217,42 +250,33 @@ check_temp_mysql_dir() {
 }
 
 setup_temp_mysql() {
-    if docker_xtrabackup_exec "--copy-back --target-dir=/backup/full --datadir=/var/lib/mysql_new"; then 
-        if docker network create "${MYSQL_TEST_NETWORK}"; then
-            docker run -d \
-                --user "${MYSQL_TEST_CONTAINER_UID}" \
-                --name "${MYSQL_TEST_CONTAINER_NAME}" \
-                --volume "${MYSQL_TEST_DATA_DIR}:/var/lib/mysql" \
-                --network "${MYSQL_TEST_NETWORK}" \
-                --publish "${MYSQL_TEST_HOST_PORT}:3306" \
-                "${MYSQL_TEST_IMAGE}"
-            if check_mysql_state; then 
-                clean_temp_mysql
-                log "DONE" "Test Data On MySQL Temp Successfully"
-            else
-                clean_temp_mysql
-                log "ERROR" "Can Not Excute Test Data On MySQL Temp"
-                exit 1;
-            fi
-        else
-            log "ERROR" "Failed To Create MySQL Test Network"
-        fi
-    else
+
+    if ! docker_xtrabackup_exec "--copy-back --target-dir=/backup/full --datadir=/var/lib/mysql_new"; then 
         log "ERROR" "Failed To Copy Backup Data To MySQL Test Container"
+        exit 1
     fi
-}
 
+    if ! docker network create "${MYSQL_TEST_NETWORK}"; then
+        log "ERROR" "Failed To Create MySQL Test Network"
+        exit 1
+    fi
 
+    docker run -d \
+        --user "${MYSQL_TEST_CONTAINER_UID}" \
+        --name "${MYSQL_TEST_CONTAINER_NAME}" \
+        --volume "${MYSQL_TEST_DATA_DIR}:/var/lib/mysql" \
+        --network "${MYSQL_TEST_NETWORK}" \
+        --publish "${MYSQL_TEST_HOST_PORT}:3306" \
+        "${MYSQL_TEST_IMAGE}"
 
-
-level1_tables() {
-    init_backup_name "high-level-1"
-    full_backup --tables-file=/tmp/tables/level1.txt
-}
-
-level2_tables() {
-    init_backup_name "high-level-2"
-    full_backup --tables-file=/tmp/tables/level2.txt
+    if check_mysql_state; then 
+        clean_temp_mysql
+        log "DONE" "Test Data On MySQL Temp Successfully"
+    else
+        clean_temp_mysql
+        log "ERROR" "Cannot Execute Test Data On MySQL Temp"
+        exit 1
+    fi
 }
 
 
@@ -292,6 +316,9 @@ clean_files_local() {
         find "$MYSQL_COMPRESSED_FILES_DIR" -type f -mtime +$MYSQL_COMPRESSED_RETANTION_DAY -exec rm -rf {} \;
     fi  
 }
+
+
+# -- S3 functions -- #
 
 upload_files_s3() {  
     aws s3 --endpoint-url $S3_ENDPOINT cp $MYSQL_COMPRESSED_FILES_NAME s3://$S3_BUCKET_NAME/$S3_BACKUP_DIR/;

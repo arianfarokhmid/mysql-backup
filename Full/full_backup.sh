@@ -114,7 +114,7 @@ full_backup() {
     mkdir -p "$MYSQL_BACKUP_DIR/full"
     if docker_xtrabackup_exec "--backup --target-dir=/backup/full $args"; then 
         if apply_log; then 
-            clean_temp_mysql
+            finialize_backup
         fi
     else
         log "ERROR" "Can Create Full Backup"
@@ -270,55 +270,65 @@ setup_temp_mysql() {
         "${MYSQL_TEST_IMAGE}"
 
     if check_mysql_state; then 
-        clean_temp_mysql
+        finialize_backup
         log "DONE" "Test Data On MySQL Temp Successfully"
     else
-        clean_temp_mysql
+        finialize_backup
         log "ERROR" "Cannot Execute Test Data On MySQL Temp"
         exit 1
     fi
 }
 
 
-clean_temp_mysql() {
+finialize_backup() {
+    clean_files_local
+    compress_files
+    s3_sync
 
-    if tar -czvf $MYSQL_COMPRESSED_FILES_NAME $MYSQL_BACKUP_DIR/full; then 
-        if rm -rf $MYSQL_BACKUP_DIR/full; then
-            log "DONE" "MySQL Full Data Compressed"
-        fi
-    else
-        log "ERROR" "Failed To Compress MySQL Full Data"
+}
+
+compress_files() {
+    if ! tar -czvf "${MYSQL_COMPRESSED_FILES_NAME}" "${MYSQL_BACKUP_DIR}/full"; then 
+        log "ERROR" "Failed to Compress MySQL Full Data"
+        exit 1
     fi
 
+    if ! rm -rf "${MYSQL_BACKUP_DIR}/full"; then
+        log "ERROR" "Failed to remove original full backup directory after compression"
+        exit 1
+    fi
 
-   if clean_files_local; then
-       log "DONE" "Clean Old Backups Success"
-   else
-       log "ERROR" "Clean Old Backups Failed"
-   fi
-
-   if clean_files_s3; then
-       log "DONE" "Clean Old S3 Backups Success"
-   else
-       log "ERROR" "Clean Old S3 Backups Failed"
-   fi
-
-   if upload_files_s3; then
-       log "DONE" "Upload Backup To S3 Success"
-   else
-       log "ERROR" "Failed To Upload Backup To S3"
-   fi
-
+    log "DONE" "MySQL Full Data Compressed"
 }
 
 clean_files_local() {
     if [[ $MYSQL_COMPRESSED_RETANTION_DAY -gt 0 ]]; then 
-        find "$MYSQL_COMPRESSED_FILES_DIR" -type f -mtime +$MYSQL_COMPRESSED_RETANTION_DAY -exec rm -rf {} \;
+        if find "$MYSQL_COMPRESSED_FILES_DIR" -type f -mtime +$MYSQL_COMPRESSED_RETANTION_DAY -exec rm -rf {} \; then
+            log "DONE" "Clean Old Backups Success"
+        else
+            log "ERROR" "Clean Old Backups Failed"
+        fi
     fi  
 }
 
 
 # -- S3 functions -- #
+
+s3_sync() {
+
+    if clean_files_s3; then
+        log "DONE" "Clean Old S3 Backups Success"
+    else
+        log "ERROR" "Clean Old S3 Backups Failed"
+    fi
+
+    if upload_files_s3; then
+        log "DONE" "Upload Backup To S3 Success"
+    else
+        log "ERROR" "Failed To Upload Backup To S3"
+    fi
+
+}
 
 upload_files_s3() {  
     aws s3 --endpoint-url $S3_ENDPOINT cp $MYSQL_COMPRESSED_FILES_NAME s3://$S3_BUCKET_NAME/$S3_BACKUP_DIR/;

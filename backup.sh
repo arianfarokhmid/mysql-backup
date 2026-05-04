@@ -405,7 +405,7 @@ compress_files() {
 
 clean_files_local() {
     if [[ $MYSQL_COMPRESSED_RETANTION_DAY -gt 0 ]]; then 
-        if find "$MYSQL_COMPRESSED_FILES_DIR" -type f -mtime +$MYSQL_COMPRESSED_RETANTION_DAY -exec rm -rf {} \; then
+        if find "$MYSQL_COMPRESSED_FILES_DIR" -type f -mtime +$MYSQL_COMPRESSED_RETANTION_DAY -exec rm -rf {} \;; then
             log "DONE" "Clean Old Backups Success"
         else
             log "ERROR" "Clean Old Backups Failed"

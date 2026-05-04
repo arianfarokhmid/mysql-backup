@@ -1,5 +1,8 @@
 #!/bin/bash
 
+# -------------------------
+# variables
+# -------------------------
 MYSQL_BACKUP_DIR=/opt/mysql-inc-dev-backup/backup
 MYSQL_DATA_HOST=/opt/mysql/data2/
 MYSQL_USER=bkpuser
@@ -7,7 +10,6 @@ MYSQL_PASSWORD=jRhBEXFo2waHL23PlocT9szn3ZuN
 MYSQL_PORT=3306
 MYSQL_HOST=mysql-dev
 MYSQL_DOCKER_NETWORK=mysql
-
 
 MYSQL_TEST_USERNAME=data_cheker
 MYSQL_TEST_PASSWORD=T39EEyFRCCfmeNeQNXMbXVrK
@@ -18,7 +20,6 @@ MYSQL_TEST_DATA_DIR=/opt/mysql-inc-dev-backup/mysql-test-backup-data
 MYSQL_TEST_NETWORK=mysql-test-backup-net
 MYSQL_TEST_HOST_PORT=3309
 
-
 CONTAINER_IMAGE=percona/percona-xtrabackup:8.0.35
 
 S3_ENDPOINT=https://s3.thr2.sotoon.ir
@@ -27,6 +28,98 @@ S3_BACKUP_DIR=dev-inc-database
 S3_MAX_BACKUPS=2
 
 PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+# --------------------------
+# Lock function
+# --------------------------
+acquire_lock() {
+    local lock_name="${1:-$(basename "$0")}"
+    local lock_file="/tmp/${lock_name}.lock"
+
+    exec 200>"$lock_file"
+
+    if ! flock -n 200; then
+        echo "{\"timestamp\":\"$(date -u "+%Y-%m-%d %H:%M")\",\"source\":\"$(basename "$0")\",\"status\":\"ERROR\",\"message\":\"Another instance of this script is already running\"}"
+        exit 1
+    fi
+
+    trap 'flock -u 200' EXIT
+}
+
+if [[ "$1" != "--help" ]]; then
+    acquire_lock
+fi
+# --------------------------
+# Help Function
+# --------------------------
+show_help() {
+cat <<EOF
+Usage: $0 [OPTIONS]
+
+Backup Options:
+  --full                     Run full backup
+  --incremental              Run incremental backup
+  --priority                 Specify a table priority
+
+General Options:
+  --help                     Show this help message
+  --verbose                  Enable verbose output
+
+Examples:
+  $0 --full
+  $0 --priority 1/2/3/4    
+  $0 --incremental
+EOF
+}
+# --------------------------
+# Default variables
+# --------------------------
+MODE=""
+TABLE_LABEL=""
+VERBOSE=0
+# --------------------------
+# Argument Parser
+# --------------------------
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --help)
+        show_help
+        exit 0
+        ;;
+    --full)
+        MODE="full"
+        fullbackup_name="$2"
+        shift
+        ;;
+    --incremental)
+        MODE="incremental"
+        ;;
+    --priority)
+        if [[ "$2" != "1" && "$2" != "2" ]]; then
+            echo "Error: --priority must be 1 or 2"
+            exit 1
+        fi
+
+        if [[ -n "$3" && "$3" != --* ]]; then
+            echo "Error: --priority accepts only one value"
+            exit 1
+        fi
+
+        MODE="$2"
+        shift
+
+        ;;
+    --verbose)
+        VERBOSE=1
+        ;;
+    *)
+        echo "Error: Unknown option '$1'"
+        echo "Use --help for usage."
+        exit 1
+        ;;
+  esac
+  shift
+done
+
 
 log() {
     local test_mode=true
@@ -134,6 +227,7 @@ full_backup() {
 
 
 level1_tables() {
+    echo "level1 priority backup started ..."
     init_backup_name "high-level-1"
     first_backup --tables-file=/tmp/tables/level1.txt
 }
@@ -311,7 +405,7 @@ compress_files() {
 
 clean_files_local() {
     if [[ $MYSQL_COMPRESSED_RETANTION_DAY -gt 0 ]]; then 
-        if find "$MYSQL_COMPRESSED_FILES_DIR" -type f -mtime +$MYSQL_COMPRESSED_RETANTION_DAY -exec rm -rf {} \; then
+        if find "$MYSQL_COMPRESSED_FILES_DIR" -type f -mtime +$MYSQL_COMPRESSED_RETANTION_DAY -exec rm -rf {} \;; then
             log "DONE" "Clean Old Backups Success"
         else
             log "ERROR" "Clean Old Backups Failed"
@@ -369,9 +463,8 @@ clean_files_s3() {
 }
 
 
-main() {
+incremental () {
     init_backup_name
-
     if [[ ! -d "${MYSQL_BACKUP_DIR}/full" ]] || [[ ! -f "${MYSQL_BACKUP_DIR}/full/xtrabackup_checkpoints" ]]; then
         first_backup
         return
@@ -388,3 +481,34 @@ main() {
         inc_backup
     fi
 }
+
+# --------------------------
+# Execute Logic
+# --------------------------
+if [[ "$VERBOSE" -eq 1 ]]; then
+    echo "Mode = $MODE"
+    echo "Table Label = $TABLE_LABEL"
+fi
+
+case "$MODE" in
+  full)
+      fullbackup $fullbackup_name  # your function
+      ;;
+  incremental)
+      #incremental_backup   # your function
+      inc_backup 
+      ;;
+  
+  1)
+      level1_tables
+      ;;
+  
+  2)
+      level2_tables
+      ;;
+  
+  "")
+      echo -e "Error: You must specify --full or --incremental or --priority\nUse --help for more"
+      exit 1
+      ;;
+esac

@@ -564,10 +564,9 @@ fi
 
 case "$MODE" in
   full)
-      full_backup $fullbackup_name  # your function
+      full_backup 
       ;;
   incremental)
-      #incremental_backup   # your function
       inc_backup 
       ;;
   

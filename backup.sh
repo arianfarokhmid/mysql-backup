@@ -1,6 +1,77 @@
 #!/bin/bash
 
 # -------------------------
+# Prerequisites Check
+# -------------------------
+check_prerequisites() {
+    local missing_tools=()
+    local missing_dirs=()
+
+    echo "Checking prerequisites..."
+
+    local required_commands=("docker" "aws" "jq" "tar" "curl" "grep" "awk" "sed" "find" "flock" "date" "basename")
+    
+    for cmd in "${required_commands[@]}"; do
+        if ! command -v "$cmd" &> /dev/null; then
+            missing_tools+=("$cmd")
+        fi
+    done
+
+    if command -v docker &> /dev/null; then
+        if ! docker info &> /dev/null; then
+            echo "ERROR: Docker daemon is not running"
+            exit 1
+        fi
+    fi
+
+    local required_dirs=(
+        "/opt/mysql-inc-dev-backup/backup"
+        "/opt/mysql-inc-dev-backup/final-backups"
+        "/opt/mysql-inc-dev-backup/mysql-test-backup-data"
+        "/db-backup/log"
+    )
+
+    for dir in "${required_dirs[@]}"; do
+        if [[ ! -d "$dir" ]]; then
+            if mkdir -p "$dir" 2>/dev/null; then
+                echo "Created directory: $dir"
+            else
+                missing_dirs+=("$dir")
+            fi
+        fi
+    done
+
+    if command -v aws &> /dev/null; then
+        if ! aws sts get-caller-identity &> /dev/null; then
+            echo "WARNING: AWS CLI is not properly configured. S3 operations may fail."
+        fi
+    fi
+
+    if [[ ${#missing_tools[@]} -gt 0 ]]; then
+        echo "ERROR: The following required tools are missing:"
+        printf '%s\n' "${missing_tools[@]}"
+        echo ""
+        echo "Please install the missing tools using your package manager:"
+        echo "  Ubuntu/Debian: sudo apt-get install ${missing_tools[@]}"
+        echo "  CentOS/RHEL: sudo yum install ${missing_tools[@]}"
+        echo ""
+        echo "Also ensure Docker is installed: https://docs.docker.com/engine/install/"
+        echo "And AWS CLI is installed: pip3 install awscli"
+        exit 1
+    fi
+
+    if [[ ${#missing_dirs[@]} -gt 0 ]]; then
+        echo "ERROR: Could not create the following required directories:"
+        printf '%s\n' "${missing_dirs[@]}"
+        exit 1
+    fi
+
+    echo "All prerequisites are satisfied ✓"
+}
+
+check_prerequisites
+
+# -------------------------
 # variables
 # -------------------------
 MYSQL_BACKUP_DIR=/opt/mysql-inc-dev-backup/backup
@@ -227,7 +298,8 @@ full_backup() {
 
 
 level1_tables() {
-    echo "level1 priority backup started ..."
+    echo "sleeping for test ..."
+    sleep  100
     init_backup_name "high-level-1"
     first_backup --tables-file=/tmp/tables/level1.txt
 }
@@ -492,7 +564,7 @@ fi
 
 case "$MODE" in
   full)
-      fullbackup $fullbackup_name  
+      full_backup 
       ;;
   incremental)
       inc_backup 

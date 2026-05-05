@@ -1,4 +1,257 @@
 #!/bin/bash
+# -------------------------
+# Permission Check
+# -------------------------
+check_user_permissions() {
+    if [[ $EUID -eq 0 ]]; then
+        # User is root
+        return 0
+    fi
+
+    # Check if user has sudo access without password
+    if sudo -n true 2>/dev/null; then
+        return 0
+    fi
+
+    # Check if user can use sudo (with password)
+    if sudo -l &>/dev/null; then
+        return 0
+    fi
+
+    return 1
+}
+
+# -------------------------
+# Prerequisites Check
+# -------------------------
+
+# Detect OS and package manager
+detect_os() {
+    if [[ -f /etc/os-release ]]; then
+        . /etc/os-release
+        OS=$ID
+    elif type lsb_release >/dev/null 2>&1; then
+        OS=$(lsb_release -si | tr '[:upper:]' '[:lower:]')
+    else
+        OS="unknown"
+    fi
+}
+
+# Install missing tools based on OS
+install_tools() {
+    local missing_tools=("$@")
+    
+    if [[ ${#missing_tools[@]} -eq 0 ]]; then
+        return 0
+    fi
+
+    echo "Installing missing tools: ${missing_tools[@]}"
+    
+    if [[ "$OS" == "ubuntu" ]] || [[ "$OS" == "debian" ]]; then
+        sudo apt-get update -y
+        sudo apt-get install -y "${missing_tools[@]}"
+    elif [[ "$OS" == "centos" ]] || [[ "$OS" == "rhel" ]] || [[ "$OS" == "fedora" ]]; then
+        sudo yum install -y "${missing_tools[@]}"
+    else
+        echo "ERROR: Unable to determine package manager for OS: $OS"
+        return 1
+    fi
+}
+
+# Install Docker
+install_docker() {
+    echo "Installing Docker..."
+    if [[ "$OS" == "ubuntu" ]] || [[ "$OS" == "debian" ]]; then
+        sudo apt-get update -y
+        sudo apt-get install -y apt-transport-https ca-certificates curl gnupg lsb-release
+        curl -fsSL https://download.docker.com/linux/ubuntu/gpg | sudo gpg --dearmor -o /usr/share/keyrings/docker-archive-keyring.gpg
+        echo "deb [arch=amd64 signed-by=/usr/share/keyrings/docker-archive-keyring.gpg] https://download.docker.com/linux/ubuntu $(lsb_release -cs) stable" | sudo tee /etc/apt/sources.list.d/docker.list > /dev/null
+        sudo apt-get update -y
+        sudo apt-get install -y docker-ce docker-ce-cli containerd.io
+    elif [[ "$OS" == "centos" ]] || [[ "$OS" == "rhel" ]]; then
+        sudo yum install -y yum-utils
+        sudo yum-config-manager --add-repo https://download.docker.com/linux/centos/docker-ce.repo
+        sudo yum install -y docker-ce docker-ce-cli containerd.io
+    fi
+    
+    sudo systemctl start docker
+    sudo systemctl enable docker
+    sudo usermod -aG docker $USER
+    echo "Docker installed successfully. You may need to log out and log back in for group changes to take effect."
+}
+
+# Install AWS CLI
+install_aws_cli() {
+    echo "Installing AWS CLI..."
+    if command -v pip3 &> /dev/null; then
+        pip3 install awscli
+    elif command -v pip &> /dev/null; then
+        pip install awscli
+    else
+        echo "ERROR: pip/pip3 not found. Please install Python first."
+        return 1
+    fi
+}
+
+check_prerequisites() {
+    local missing_tools=()
+    local missing_dirs=()
+    local auto_install=$1
+
+    echo "Checking prerequisites..."
+
+    local required_commands=("docker" "aws" "jq" "tar" "curl" "grep" "awk" "sed" "find" "flock" "date" "basename")
+    
+    for cmd in "${required_commands[@]}"; do
+        if ! command -v "$cmd" &> /dev/null; then
+            missing_tools+=("$cmd")
+        fi
+    done
+
+    if command -v docker &> /dev/null; then
+        if ! docker info &> /dev/null; then
+            echo "ERROR: Docker daemon is not running"
+            exit 1
+        fi
+    fi
+
+    local required_dirs=(
+        "/opt/mysql-inc-dev-backup/backup"
+        "/opt/mysql-inc-dev-backup/final-backups"
+        "/opt/mysql-inc-dev-backup/mysql-test-backup-data"
+        "/db-backup/log"
+    )
+
+    for dir in "${required_dirs[@]}"; do
+        if [[ ! -d "$dir" ]]; then
+            if mkdir -p "$dir" 2>/dev/null; then
+                echo "Created directory: $dir"
+            else
+                missing_dirs+=("$dir")
+            fi
+        fi
+    done
+
+    if command -v aws &> /dev/null; then
+        if ! aws sts get-caller-identity &> /dev/null; then
+            echo "WARNING: AWS CLI is not properly configured. S3 operations may fail."
+        fi
+    fi
+
+    if [[ ${#missing_tools[@]} -gt 0 ]]; then
+        echo "ERROR: The following required tools are missing:"
+        printf '%s\n' "${missing_tools[@]}"
+        echo ""
+
+        # Check permissions before asking to install
+        if ! check_user_permissions; then
+            echo "ERROR: Insufficient permissions to install packages."
+            echo "You must be root or have sudo access to install missing tools."
+            echo ""
+            echo "Please do one of the following:"
+            echo "  1. Run this script as root: sudo $0 $@"
+            echo "  2. Configure sudo to work without a password (contact your system administrator)"
+            echo "  3. Manually install the missing tools using your package manager:"
+            echo "     Ubuntu/Debian: sudo apt-get install ${missing_tools[@]}"
+            echo "     CentOS/RHEL: sudo yum install ${missing_tools[@]}"
+            exit 1
+        fi
+        
+        if [[ "$auto_install" == "1" ]]; then
+            echo "Auto-install mode enabled. Installing missing tools..."
+            detect_os
+            install_tools "${missing_tools[@]}"
+            if [[ $? -ne 0 ]]; then
+                echo "Failed to install some tools. Please install manually."
+                exit 1
+            fi
+        else
+            echo "Would you like to install the missing tools automatically? (yes/no)"
+            read -r user_response
+            
+            if [[ "$user_response" == "yes" ]] || [[ "$user_response" == "y" ]]; then
+                detect_os
+                install_tools "${missing_tools[@]}"
+                if [[ $? -ne 0 ]]; then
+                    echo "Failed to install some tools. Please install manually."
+                    exit 1
+                fi
+            else
+                echo "Please install the missing tools using your package manager:"
+                echo "  Ubuntu/Debian: sudo apt-get install ${missing_tools[@]}"
+                echo "  CentOS/RHEL: sudo yum install ${missing_tools[@]}"
+                exit 1
+            fi
+        fi
+    fi
+
+    # Check if Docker needs installation
+    if ! command -v docker &> /dev/null; then
+        if ! check_user_permissions; then
+            echo "ERROR: Insufficient permissions to install Docker."
+            echo "You must be root or have sudo access. Run as: sudo $0 $@"
+            exit 1
+        fi
+
+        if [[ "$auto_install" == "1" ]]; then
+            echo "Auto-install mode enabled. Installing Docker..."
+            detect_os
+            install_docker
+        else
+            echo "Docker is not installed. Would you like to install it automatically? (yes/no)"
+            read -r user_response
+            if [[ "$user_response" == "yes" ]] || [[ "$user_response" == "y" ]]; then
+                detect_os
+                install_docker
+            else
+                echo "Please install Docker: https://docs.docker.com/engine/install/"
+                exit 1
+            fi
+        fi
+    fi
+
+    # Check if AWS CLI needs installation
+    if ! command -v aws &> /dev/null; then
+        if ! check_user_permissions; then
+            echo "ERROR: Insufficient permissions to install AWS CLI."
+            echo "You must be root or have sudo access. Run as: sudo $0 $@"
+            exit 1
+        fi
+
+        if [[ "$auto_install" == "1" ]]; then
+            echo "Auto-install mode enabled. Installing AWS CLI..."
+            install_aws_cli
+        else
+            echo "AWS CLI is not installed. Would you like to install it automatically? (yes/no)"
+            read -r user_response
+            if [[ "$user_response" == "yes" ]] || [[ "$user_response" == "y" ]]; then
+                install_aws_cli
+            else
+                echo "Please install AWS CLI: pip3 install awscli"
+                exit 1
+            fi
+        fi
+    fi
+
+    if [[ ${#missing_dirs[@]} -gt 0 ]]; then
+        echo "ERROR: Could not create the following required directories:"
+        printf '%s\n' "${missing_dirs[@]}"
+        exit 1
+    fi
+
+    echo "All prerequisites are satisfied ✓"
+}
+
+# Parse --auto-install flag before acquiring lock
+AUTO_INSTALL=0
+for arg in "$@"; do
+    if [[ "$arg" == "--auto-install" ]]; then
+        AUTO_INSTALL=1
+        break
+    fi
+done
+
+check_prerequisites $AUTO_INSTALL
 
 # -------------------------
 # Prerequisites Check
@@ -9,7 +262,7 @@ check_prerequisites() {
 
     echo "Checking prerequisites..."
 
-    local required_commands=("docker" "aws" "jq" "tar" "curl" "grep" "awk" "sed" "find" "flock" "date" "basename")
+    local required_commands=("docker" "aws" "jq" "tar" "curl" "grep" "awk" "sed" "find" "flock" "date" "basename" "pigz")
     
     for cmd in "${required_commands[@]}"; do
         if ! command -v "$cmd" &> /dev/null; then
@@ -139,6 +392,7 @@ Examples:
   $0 --full
   $0 --priority 1/2/3/4    
   $0 --incremental
+  sudo $0 --full --auto-install
 EOF
 }
 # --------------------------
@@ -181,6 +435,8 @@ while [[ $# -gt 0 ]]; do
         ;;
     --verbose)
         VERBOSE=1
+        ;;
+    --auto-install)
         ;;
     *)
         echo "Error: Unknown option '$1'"
@@ -293,9 +549,7 @@ full_backup() {
     fi
 }
 
-
 ## -- Table Level Backup -- #
-
 
 level1_tables() {
     echo "sleeping for test ..."
@@ -579,6 +833,7 @@ case "$MODE" in
       ;;
   
   "")
+      log "ERROR" "You must specify --full or --incremental or --priority\nUse --help for more"
       echo -e "Error: You must specify --full or --incremental or --priority\nUse --help for more"
       exit 1
       ;;

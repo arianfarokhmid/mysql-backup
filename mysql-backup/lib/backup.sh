@@ -9,8 +9,10 @@ init_backup_name() {
     else 
         MYSQL_COMPRESSED_FILTER_FILE=$1
     fi
+    MYSQL_COMPRESSED_FILES_DIR=/db-backup/level_backup
     MYSQL_COMPRESSED_BASE_NAME="${MYSQL_COMPRESSED_FILES_DIR}/${MYSQL_COMPRESSED_FILTER_FILE}"
     MYSQL_COMPRESSED_FILES_NAME="${MYSQL_COMPRESSED_BASE_NAME}-backup-$(date '+%Y-%m-%d_%H-%M').tar.gz"
+    MYSQL_TABLES_BACKUP_DIR=/opt/scripts/priority-database/tables
 }
 
 docker_xtrabackup_exec() {
@@ -18,7 +20,7 @@ docker_xtrabackup_exec() {
     docker run -u 999 --rm --network $MYSQL_DOCKER_NETWORK \
         -v "$MYSQL_DATA_HOST":/var/lib/mysql:ro \
         -v "$MYSQL_BACKUP_DIR":/backup \
-        -v ./tables:/tmp/tables \
+        -v "$MYSQL_TABLES_BACKUP_DIR":/tmp/tables \
         $CONTAINER_IMAGE \
         xtrabackup --user="$MYSQL_USER" --password="$MYSQL_PASSWORD" --host="$MYSQL_HOST" --port="$MYSQL_PORT" $extra_args
 }
@@ -56,15 +58,20 @@ full_backup() {
 }
 
 level1_tables() {
-    echo "sleeping for test ..."
-    sleep 100
+
     init_backup_name "high-level-1"
-    first_backup "--tables-file=/tmp/tables/level1.txt"
+    if first_backup --tables-file=/tmp/tables/level1.txt; then
+        finialize_backup
+    fi
+    
 }
 
 level2_tables() {
     init_backup_name "high-level-2"
-    first_backup "--tables-file=/tmp/tables/level2.txt"
+    if first_backup --tables-file=/tmp/tables/level2.txt; then
+        finialize_backup
+    fi
+    
 }
 
 compress_files() {

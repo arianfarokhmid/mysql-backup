@@ -29,7 +29,6 @@ for arg in "$@"; do
     fi
 done
 
-check_prerequisites $AUTO_INSTALL
 
 if [[ "$1" != "--help" ]]; then
     acquire_lock
@@ -121,20 +120,23 @@ fi
 
 case "$MODE" in
   full)
+      #check_prerequisites
       full_backup 
       ;;
   incremental)
+      #check_prerequisites
       incremental
       ;;
   1)
+      check_prerequisites
       level1_tables
       ;;
   2)
+      check_prerequisites
       level2_tables
       ;;
   "")
-      log "ERROR" "You must specify --full or --incremental or --priority\nUse --help for more"
-      echo -e "Error: You must specify --full or --incremental or --priority\nUse --help for more"
+      log "ERROR" "You must specify --full or --incremental or --priority.Use --help for more"
       exit 1
       ;;
 esac

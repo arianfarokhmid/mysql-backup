@@ -12,6 +12,9 @@ log() {
     local status="$1"
     local message="$2"
 
+
+
+
     if [[ ! "$status" =~ ^(ERROR|DONE|INFO|WARN)$ ]]; then 
         jq -n --arg ts "$timestamp" --arg src "$source" --arg st "invalid" --arg msg "Invalid status: $status. Allowed: ERROR, DONE, INFO , WARN" \
            '{timestamp: $ts, source: $src, status: $st, message: $msg}' | tee -a "$log_file"

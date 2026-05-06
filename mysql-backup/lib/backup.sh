@@ -45,6 +45,7 @@ first_backup() {
         fi
     else
         log "ERROR" "Can Create First Backup"
+        rm -rf "$MYSQL_BACKUP_DIR"/*
         return 1
     fi
 }

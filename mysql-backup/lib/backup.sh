@@ -35,7 +35,6 @@ apply_log () {
 
 first_backup() {
     
-    sleep 1000
     local args=$1
     [[ -d "$MYSQL_BACKUP_DIR" ]] || { log "ERROR" "Dir $MYSQL_BACKUP_DIR Not Exist"; exit 1; }
     rm -rf "$MYSQL_BACKUP_DIR"/*

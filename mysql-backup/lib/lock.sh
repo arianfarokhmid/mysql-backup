@@ -10,7 +10,7 @@ acquire_lock() {
     touch "$lock_file" 2>/dev/null
     chmod 777 "$lock_file" 2>/dev/null
 
-    if ! exec 200>"$lock_file"; then
+    if ! exec 200>>"$lock_file"; then
         echo "{\"timestamp\":\"$(date -u "+%Y-%m-%d %H:%M")\",\"source\":\"$(basename "$0")\",\"status\":\"ERROR\",\"message\":\"Failed to open lock file: $lock_file\"}" >&2
         exit 1
     fi
@@ -20,5 +20,5 @@ acquire_lock() {
         exit 1
     fi
 
-    trap 'flock -u 200' EXIT
+    trap "flock -u 200; rm -f /tmp/${lock_name}.lock" EXIT INT TERM
 }
